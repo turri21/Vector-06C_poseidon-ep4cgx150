@@ -1,7 +1,7 @@
 //
-// user_io.v
+// mist_io.v
 //
-// user_io for the MiST board
+// mist_io for the MiST board
 // http://code.google.com/p/mist-board/
 //
 // Copyright (c) 2014 Till Harbaum <till@harbaum.org>
@@ -22,7 +22,7 @@
 
 // parameter STRLEN and the actual length of conf_str have to match
  
-module user_io #(parameter STRLEN=0) (
+module mist_io #(parameter STRLEN=0) (
 	input [(8*STRLEN)-1:0] conf_str,
 
 	input      		   SPI_SCK,
@@ -63,7 +63,17 @@ module user_io #(parameter STRLEN=0) (
 
 	// serial com port 
 	input [7:0]		   serial_data,
-	input				   serial_strobe
+	input				   serial_strobe,
+
+	// file I/O interface
+	input             SPI_SS2,
+	input             force_erase,
+	output            downloading,   // signal indicating an active download
+   output      [4:0] index,         // menu index used to upload the file
+	input             clk,
+	output reg        wr,
+	output     [24:0] addr,
+	output      [7:0] dout
 );
 
 reg [6:0] sbuf;
@@ -80,7 +90,7 @@ assign buttons = but_sw[1:0];
 assign switches = but_sw[3:2];
 assign scandoubler_disable = but_sw[4];
 
-wire [7:0] dout = { sbuf, SPI_DI};
+wire [7:0] sdout = { sbuf, SPI_DI};
 
 // this variant of user_io is for 8 bit cores (type == a4) only
 wire [7:0] core_type = 8'ha4;
@@ -319,20 +329,20 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 		sd_dout_strobe <= 1'b0;
 		sd_din_strobe <= 1'b0;
 		
-		sbuf <= dout[6:0];
+		sbuf <= sdout[6:0];
 		bit_cnt <= bit_cnt + 3'd1;
 
 		// finished reading command byte
       if(bit_cnt == 7) begin
 			if(byte_cnt != 8'd255) byte_cnt <= byte_cnt + 8'd1;
 			if(byte_cnt == 0) begin
-				cmd <= dout;
+				cmd <= sdout;
 			
 				// fetch first byte when sectore FPGA->IO command has been seen
-				if(dout == 8'h18)
+				if(sdout == 8'h18)
 					sd_din_strobe <= 1'b1;
 					
-				if((dout == 8'h17) || (dout == 8'h18))
+				if((sdout == 8'h17) || (sdout == 8'h18))
 					sd_ack <= 1'b1;
 
 				mount_strobe <= 1'b0;
@@ -341,23 +351,23 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 			
 				case(cmd)
 				// buttons and switches
-					8'h01: but_sw <= dout; 
-					8'h02: joystick_0 <= dout;
-					8'h03: joystick_1 <= dout;
+					8'h01: but_sw <= sdout; 
+					8'h02: joystick_0 <= sdout;
+					8'h03: joystick_1 <= sdout;
 
 					// store incoming ps2 mouse bytes 
 					8'h04: begin
-							ps2_mouse_fifo[ps2_mouse_wptr] <= dout; 
+							ps2_mouse_fifo[ps2_mouse_wptr] <= sdout; 
 							ps2_mouse_wptr <= ps2_mouse_wptr + 3'd1;
 						end
 
 					// store incoming ps2 keyboard bytes 
 					8'h05: begin
-							ps2_kbd_fifo[ps2_kbd_wptr] <= dout; 
+							ps2_kbd_fifo[ps2_kbd_wptr] <= sdout; 
 							ps2_kbd_wptr <= ps2_kbd_wptr + 3'd1;
 						end
 				
-					8'h15: status <= dout;
+					8'h15: status <= sdout;
 				
 					// send SD config IO -> FPGA
 					// flag that download begins
@@ -367,7 +377,7 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 					// send sector IO -> FPGA
 					// flag that download begins
 					8'h17: begin 
-							sd_dout        <= dout;
+							sd_dout        <= sdout;
 							sd_dout_strobe <= 1'b1;
 						end
 				
@@ -377,15 +387,15 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 					// joystick analog
 					8'h1a: begin
 							// first byte is joystick index
-							if(byte_cnt == 1) stick_idx <= dout[2:0];
+							if(byte_cnt == 1) stick_idx <= sdout[2:0];
 							else if(byte_cnt == 2) begin
 								// second byte is x axis
-								if(stick_idx == 0) joystick_analog_0[15:8] <= dout;
-									else if(stick_idx == 1) joystick_analog_1[15:8] <= dout;
+								if(stick_idx == 0) joystick_analog_0[15:8] <= sdout;
+									else if(stick_idx == 1) joystick_analog_1[15:8] <= sdout;
 							end else if(byte_cnt == 3) begin
 								// third byte is y axis
-								if(stick_idx == 0) joystick_analog_0[7:0] <= dout;
-									else if(stick_idx == 1) joystick_analog_1[7:0] <= dout;
+								if(stick_idx == 0) joystick_analog_0[7:0] <= sdout;
+									else if(stick_idx == 1) joystick_analog_1[7:0] <= sdout;
 							end
 						end
 
@@ -398,5 +408,140 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 		end
 	end
 end
-   
+
+/////////////////////////////////////////////////////////////////////////////////
+//
+// Core specific part.
+// Load/erase addresses may vary from core to core
+//
+
+assign index = index_reg;
+assign downloading = downloading_reg || erasing;
+assign dout = erasing ? 8'h00      : data;
+assign addr = erasing ? erase_addr : write_a;
+
+reg [6:0]  fbuf;
+reg [7:0]  fcmd;
+reg [7:0]  data;
+reg [4:0]  cnt;
+
+reg [24:0] waddr;
+reg [24:0] write_a    = 0;
+reg [24:0] erase_addr = 0;
+reg rclk = 1'b0;
+
+reg erase_trigger;
+
+localparam UIO_FILE_TX      = 8'h53;
+localparam UIO_FILE_TX_DAT  = 8'h54;
+localparam UIO_FILE_INDEX   = 8'h55;
+
+reg  [4:0] index_reg;
+reg downloading_reg = 0;
+reg        erasing = 0;
+reg [24:0] erase_mask;
+
+// data_io has its own SPI interface to the io controller
+always@(posedge SPI_SCK, posedge SPI_SS2, posedge force_erase) begin
+	if(force_erase) 
+		index_reg <= 5'd31;
+	else if(SPI_SS2 == 1'b1)
+		cnt <= 5'd0;
+	else begin
+		rclk <= 1'b0;
+		erase_trigger <= 1'b0;
+
+		// don't shift in last bit. It is evaluated directly
+		// when writing to ram
+		if(cnt != 15)
+			fbuf <= { fbuf[5:0], SPI_DI};
+
+		// increase target address after write
+		if(rclk)
+			waddr <= waddr + 25'd1;
+	 
+		// count 0-7 8-15 8-15 ... 
+		if(cnt < 15) cnt <= cnt + 4'd1;
+			else cnt <= 4'd8;
+
+		// finished command byte
+      if(cnt == 7)
+			fcmd <= {fbuf, SPI_DI};
+
+		// prepare/end transmission
+		if((fcmd == UIO_FILE_TX) && (cnt == 15)) begin
+			// prepare 
+			if(SPI_DI) begin
+				case(index_reg)
+							0: waddr <= 25'h080000; // BOOT ROM
+							1: waddr <= 25'h000100; // ROM file
+							2: waddr <= 25'h010000; // EDD file
+							3: waddr <= 25'h100000; // FDD file
+					default: waddr <= 25'h000000; // C00 file
+				endcase
+				downloading_reg <= 1; 
+			end else begin
+				write_a <= waddr;
+				downloading_reg <= 0; 
+				if(index_reg == 1) erase_trigger <= 1;
+			end
+		end
+
+		// command 0x54: UIO_FILE_TX
+		if((fcmd == UIO_FILE_TX_DAT) && (cnt == 15)) begin
+			write_a <= waddr;
+			data <= {fbuf, SPI_DI};
+			rclk <= 1'b1;
+		end
+		
+      // expose file (menu) index
+      if((fcmd == UIO_FILE_INDEX) && (cnt == 15))
+			index_reg <= {fbuf[3:0], SPI_DI};
+	end
+end
+
+always@(posedge clk) begin
+	reg rclkD, rclkD2;
+	reg eraseD, eraseD2;
+	reg feraseD = 0, feraseD2 = 0;
+	reg  [4:0] erase_clk_div;
+	reg [24:0] end_addr;
+	rclkD <= rclk;
+	rclkD2 <= rclkD;
+	wr <= 0;
+	
+	if(rclkD && !rclkD2) wr <= 1;
+
+	eraseD <= erase_trigger;
+	eraseD2 <= eraseD;
+
+	feraseD <= force_erase;
+	feraseD2 <= feraseD;
+	
+	// start erasing
+	if(eraseD && !eraseD2) begin
+		erase_clk_div <= 0;
+		erase_addr <= waddr;
+		erase_mask <= 25'hFFFF;
+		end_addr <= 25'hFF;
+		erasing <= 1;
+	end else if(feraseD && !feraseD2) begin
+		erase_clk_div <= 0;
+		erase_addr <= 25'h1FFFFFF;
+		erase_mask <= 25'h1FFFFFF;
+		end_addr <= 25'h4FFFF;
+		erasing <= 1;
+	end else begin
+		erase_clk_div <= erase_clk_div + 5'd1;
+		if(!erase_clk_div) begin
+			if(erase_addr != end_addr) begin
+				erase_addr <= (erase_addr + 25'd1) & erase_mask;
+				wr <= 1;
+			end else begin
+				erasing <= 0;
+			end
+		end
+	end
+end
+
 endmodule

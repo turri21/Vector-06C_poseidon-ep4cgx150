@@ -49,17 +49,24 @@ module Vector06
    output        SDRAM_CKE
 );
 
+///////////////   MIST ARM I/O   /////////////////
 assign LED = ~(ioctl_download | fdd_rd);
 
-wire [7:0] status;
-wire [1:0] buttons;
 wire scandoubler_disable;
 wire ps2_kbd_clk, ps2_kbd_data;
 
-wire [7:0] joyA;
-wire [7:0] joyB;
+wire  [7:0] status;
+wire  [1:0] buttons;
+wire  [7:0] joyA;
+wire  [7:0] joyB;
 
-user_io #(.STRLEN(81)) user_io 
+wire        ioctl_wr;
+wire [24:0] ioctl_addr;
+wire  [7:0] ioctl_data;
+wire        ioctl_download;
+wire  [4:0] ioctl_index;
+
+mist_io #(.STRLEN(81)) user_io 
 (
 	.conf_str
 	(
@@ -78,7 +85,16 @@ user_io #(.STRLEN(81)) user_io
 	.joystick_1(joyB),
 	.ps2_clk(clk_ps2),
 	.ps2_kbd_clk(ps2_kbd_clk),
-	.ps2_kbd_data(ps2_kbd_data)
+	.ps2_kbd_data(ps2_kbd_data),
+
+	.SPI_SS2(SPI_SS2),
+	.force_erase(cold_reset),
+	.downloading(ioctl_download),
+	.index(ioctl_index),
+	.clk(clk_sys),
+	.wr(ioctl_wr),
+	.addr(ioctl_addr),
+	.dout(ioctl_data)
 );
 
 ////////////////////   CLOCKS   ///////////////////
@@ -468,28 +484,6 @@ sigma_delta_dac #(.MSBI(10)) dac_r
 	.RESET(reset),
 	.DACin(psg_active ? {1'b0, psg_ch_c, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {legacy_audio, 8'd0}),
 	.DACout(AUDIO_R)
-);
-
-////////////////   LOADING   ////////////////
-wire        ioctl_wr;
-wire [24:0] ioctl_addr;
-wire  [7:0] ioctl_data;
-wire        ioctl_download;
-wire  [4:0] ioctl_index;
-
-data_io data_io
-(
-	.sck(SPI_SCK),
-	.ss(SPI_SS2),
-	.sdi(SPI_DI),
-
-	.force_erase(cold_reset),
-	.downloading(ioctl_download),
-	.index(ioctl_index),
-	.clk(clk_sys),
-	.wr(ioctl_wr),
-	.addr(ioctl_addr),
-	.dout(ioctl_data)
 );
 
 endmodule
