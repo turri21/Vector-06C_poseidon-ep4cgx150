@@ -279,7 +279,7 @@ always @(posedge edsk_we, posedge reset) begin
 		else ed_reg <= cpu_o;
 end
 
-wire ed_win   = addr[15] & (addr[13] ^ addr[14]);
+wire ed_win   = addr[15] & ((addr[13] ^ addr[14]) | (ed_reg[6] & addr[13] & addr[14]) | (ed_reg[7] & ~addr[13] & ~addr[14]));
 wire ed_ram   = ed_reg[5] & ed_win   & (ram_read | ~write_n);
 wire ed_stack = ed_reg[4] & io_stack & (ram_read | ~write_n);
 
