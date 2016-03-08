@@ -154,12 +154,12 @@ reg [7:0] read_addr[6];
 
 always @* begin
 	case (addr)
-		A_TRACK:	 q <= wdstat_track;
-		A_SECTOR: q <= wdstat_sector;
-		A_STATUS: q <= wdstat_status;
-		A_CTL2:	 q <= {5'b11111,wdstat_side,1'b0,wdstat_drive};
-		A_DATA:	 q <= (state == STATE_READY) ? wdstat_datareg : buff_rd ? buff_idata : read_addr[byte_addr[2:0]];
-		default:	 q <= 8'hff;
+		A_TRACK:  q = wdstat_track;
+		A_SECTOR: q = wdstat_sector;
+		A_STATUS: q = wdstat_status;
+		A_CTL2:	  q = {5'b11111,wdstat_side,1'b0,wdstat_drive};
+		A_DATA:	  q = (state == STATE_READY) ? wdstat_datareg : buff_rd ? buff_idata : read_addr[byte_addr[2:0]];
+		default:  q = 8'hff;
 	endcase
 end
 

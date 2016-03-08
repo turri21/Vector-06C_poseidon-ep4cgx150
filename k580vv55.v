@@ -39,14 +39,14 @@ reg [7:0] opc_r;
 
 assign opa = mode[4] ? 8'hFF : opa_r;
 assign opb = mode[1] ? 8'hFF : opb_r;
-assign opc = {mode[3] ? 4'hF : opc_r[7:4], mode[0] ? 4'hF : opc_r[3:0]};
+assign opc ={mode[3] ? 4'hF  : opc_r[7:4], mode[0] ? 4'hF : opc_r[3:0]};
 
-always begin
+always @* begin
 	case(addr) 
-			0: odata <=  mode[4] ? ipa : opa_r;
-			1: odata <=  mode[1] ? ipb : opb_r;
-			2: odata <= {mode[3] ? ipc[7:4] : opc_r[7:4], mode[0] ? ipc[3:0] : opc_r[3:0]};
-	default: odata <= 8'hFF;
+			0: odata = mode[4] ? ipa : opa_r;
+			1: odata = mode[1] ? ipb : opb_r;
+			2: odata ={mode[3] ? ipc[7:4] : opc_r[7:4], mode[0] ? ipc[3:0] : opc_r[3:0]};
+			3: odata = 0;
 	endcase
 end
 

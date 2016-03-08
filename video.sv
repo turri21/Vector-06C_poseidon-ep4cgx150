@@ -124,9 +124,9 @@ reg [7:0] palette[16];
 reg [3:0] color_idx;
 always_comb begin
 	casex({mode512, dot})
-		2'b0X: color_idx <= {idx3[7], idx2[7], idx1[7], idx0[7]};
-		2'b10: color_idx <= {1'b0,    1'b0,    idx1[7], idx0[7]};
-		2'b11: color_idx <= {idx3[7], idx2[7], 1'b0,    1'b0   };
+		2'b0X: color_idx = {idx3[7], idx2[7], idx1[7], idx0[7]};
+		2'b10: color_idx = {1'b0,    1'b0,    idx1[7], idx0[7]};
+		2'b11: color_idx = {idx3[7], idx2[7], 1'b0,    1'b0   };
 	endcase
 end
 
