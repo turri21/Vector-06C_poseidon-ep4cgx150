@@ -189,12 +189,13 @@ wire ram_read = status_word[7];
 
 wire mreq = (ram_read | ~write_n) & ~io_write & ~io_read;
 
-reg ppi1_sel, joy_sel, pit_sel, pal_sel, psg_sel, edsk_sel, fdd_sel;
+reg ppi1_sel, joy_sel, vox_sel, pit_sel, pal_sel, psg_sel, edsk_sel, fdd_sel;
 
 reg [7:0] io_data;
 always_comb begin
 	ppi1_sel =0;
 	joy_sel  =0;
+	vox_sel  =0;
 	pit_sel  =0;
 	pal_sel  =0;
 	edsk_sel =0;
@@ -205,7 +206,7 @@ always_comb begin
 		8'b000000XX: begin ppi1_sel =1; io_data = ppi1_o;  end
 		8'b0000010X: begin joy_sel  =1; io_data = 0;       end 
 		8'b00000110: begin              io_data = joyP_o;  end
-		8'b00000111: begin              io_data = joyPU_o; end
+		8'b00000111: begin vox_sel  =1; io_data = joyPU_o; end
 		8'b000010XX: begin pit_sel  =1; io_data = pit_o;   end
 		8'b0000110X: begin pal_sel  =1;                    end
 		8'b00001110: begin pal_sel  =1; io_data = joyA_o;  end
@@ -470,11 +471,18 @@ ym2149 ym2149
 	.MODE(0)
 );
 
+reg  [7:0] covox;
+wire vox_we = io_wr & vox_sel;
+always @(posedge vox_we, posedge reset) begin
+	if(reset) covox <= 0;
+		else covox <= cpu_o;
+end
+
 sigma_delta_dac #(.MSBI(10)) dac_l
 (
 	.CLK(clk_sys),
 	.RESET(reset),
-	.DACin(psg_active ? {1'b0, psg_ch_a, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {legacy_audio, 8'd0}),
+	.DACin(psg_active ? {1'b0, psg_ch_a, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {1'b0, legacy_audio, 8'd0} + {1'b0, covox, 1'b0}),
 	.DACout(AUDIO_L)
 );
 
@@ -482,7 +490,7 @@ sigma_delta_dac #(.MSBI(10)) dac_r
 (
 	.CLK(clk_sys),
 	.RESET(reset),
-	.DACin(psg_active ? {1'b0, psg_ch_c, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {legacy_audio, 8'd0}),
+	.DACin(psg_active ? {1'b0, psg_ch_c, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {1'b0, legacy_audio, 8'd0} + {1'b0, covox, 1'b0}),
 	.DACout(AUDIO_R)
 );
 
