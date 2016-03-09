@@ -471,8 +471,15 @@ ym2149 ym2149
 	.MODE(0)
 );
 
+integer covox_timeout;
+always @(posedge clk_sys) begin
+	if(reset | rom_enable) covox_timeout <= 50000000;
+		else if(covox_timeout) covox_timeout <= covox_timeout -1;
+end
+
 reg  [7:0] covox;
-wire vox_we = io_wr & vox_sel;
+wire       covox_mute = (covox_timeout != 0);
+wire       vox_we = io_wr & vox_sel & ~covox_mute;
 always @(posedge vox_we, posedge reset) begin
 	if(reset) covox <= 0;
 		else covox <= cpu_o;
