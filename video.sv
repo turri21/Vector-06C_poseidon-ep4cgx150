@@ -26,8 +26,7 @@ module video
 	input         reset,
 
 	// Clocks
-	input         clk_pix, // Video clock (24 MHz)
-	input         clk_ram, // Video ram clock (>50 MHz)
+	input         clk_24m, // Video clock 24 MHz
 
 	// OSD data
 	input         SPI_SCK,
@@ -60,7 +59,7 @@ module video
 assign retrace = VSync;
 
 reg clk_12;
-always @(posedge clk_pix) clk_12 <= !clk_12;
+always @(posedge clk_24m) clk_12 <= !clk_12;
 
 reg  [9:0] hc;
 reg  [8:0] vc;
@@ -95,7 +94,7 @@ end
 wire [31:0] vram_o;
 dpram vram
 (
-	.clock(clk_ram),
+	.clock(~clk_24m),
 	.wraddress({addr[12:0], addr[14:13]}),
 	.data(din),
 	.wren(we & addr[15]),
@@ -177,7 +176,7 @@ wire [5:0] b_out;
 
 scandoubler scandoubler(
 	.*,
-	.clk_x2(clk_pix),
+	.clk_x2(clk_24m),
 	.scanlines(2'b00),
 	    
 	.hs_in(HSync),
