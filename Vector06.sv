@@ -66,11 +66,11 @@ wire  [7:0] ioctl_data;
 wire        ioctl_download;
 wire  [4:0] ioctl_index;
 
-mist_io #(.STRLEN(81)) user_io 
+mist_io #(.STRLEN(97)) user_io 
 (
 	.conf_str
 	(
-	     "VECTOR06;ROM;F2,EDD;F3,FDD;O7,Reset palette,Yes,No;T5,Enter to app;T6,Cold reboot"
+	     "VECTOR06;ROM;F2,EDD;F3,FDD;O4,Turbo,Off,On;O7,Reset Palette,Yes,No;T5,Enter to App;T6,Cold Reboot"
 	),
 	.SPI_SCK(SPI_SCK),
 	.CONF_DATA0(CONF_DATA0),
@@ -110,25 +110,33 @@ pll pll
 );
 
 wire clk_sys;       // 24Mhz
-wire clk_ram;       // 112MHz
+wire clk_ram;       // 96MHz
 wire clk_psg;       // 1.75MHz
 reg  clk_pit;       // 1.5MHz
                     //
                     // strobes:
-reg  clk_f1, clk_f2;// 3MHz
+reg  clk_f1, clk_f2;// 3MHz/6MHz
 reg  clk_ps2;       // 14KHz
 
 always @(negedge clk_sys) begin
 	reg [4:0] div = 0;
+	reg turbo;
 	int ps2_div;
 
 	div <= div + 1'd1;
-	clk_f1  <= div[2:0] == 0;
-	clk_f2  <= div[2:0] == 4;
 	clk_pit <= div[3];
+	turbo <= (div[2:0] == 7) & status[4];
 
-	if(div[4:2]==3'b100) cpu_ready <= 1;
-		else if(!div[2:0] & cpu_sync & mreq) cpu_ready <= 0;
+	if(turbo) begin
+		clk_f1 <= (div[2:0] == 0) | (div[2:0] == 4);
+		clk_f2 <= (div[2:0] == 2) | (div[2:0] == 6);
+		cpu_ready <= 1;
+	end else begin
+		clk_f1 <= div[2:0] == 0;
+		clk_f2 <= div[2:0] == 4;
+		if(div[4:2]==3'b100) cpu_ready <= 1;
+			else if(!div[2:0] & cpu_sync & mreq) cpu_ready <= 0;
+	end
 
 	ps2_div <= ps2_div+1;
 	if(ps2_div == 856) begin 
@@ -342,7 +350,7 @@ video video
 (
 	.*,
 	.reset(reset & ~status[7]),
-	.clk_pix(clk_sys),
+	.clk_24m(clk_sys),
 	.addr(addr),
 	.din(cpu_o),
 	.we(~cpu_wr_n && ~io_write && !ed_page),
