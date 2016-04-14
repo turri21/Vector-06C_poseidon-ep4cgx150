@@ -85,10 +85,10 @@ always @(posedge clk_12) begin
 	end else hc <= hc + 1'd1;
 
 	if((vc == 311) && (hc == 759)) roll <= scroll;
-	if(hc == 559) HBlank <= 1;
-	if(hc == 593) HSync  <= 1;
-	if(hc == 649) HSync  <= 0;
-	if(hc == 719) HBlank <= 0;
+	if(hc == 563) HBlank <= 1;
+	if(hc == 597) HSync  <= 1;
+	if(hc == 653) HSync  <= 0;
+	if(hc == 723) HBlank <= 0;
 end
 
 wire [31:0] vram_o;
@@ -106,28 +106,24 @@ reg viden, dot;
 reg [7:0] idx0, idx1, idx2, idx3;
 
 always @(negedge clk_12) begin
-	if(!hc[0]) begin
-		idx0 <= {idx0[6:0], border[0]};
-		idx1 <= {idx1[6:0], border[1]};
-		idx2 <= {idx2[6:0], border[2]};
-		idx3 <= {idx3[6:0], border[3]};
+	reg [7:0] border_d;
+
+	if(hc[0]) begin
+		idx0 <= {idx0[6:0], border_d[4]};
+		idx1 <= {idx1[6:0], border_d[5]};
+		idx2 <= {idx2[6:0], border_d[6]};
+		idx3 <= {idx3[6:0], border_d[7]};
+		if((hc[3:1] == 2) & ~hc[9] & ~vc[8]) {idx0, idx1, idx2, idx3} <= vram_o;
+
+		border_d <= {border_d[3:0], border};
 	end
 
-	if(!hc[3:0] & ~hc[9] & ~vc[8]) {idx0, idx1, idx2, idx3} <= vram_o;
-
-	dot   <= hc[0];
+	dot   <= ~hc[0];
 	viden <= ~HBlank & ~VBlank;
 end
 
-reg [7:0] palette[16];
-reg [3:0] color_idx;
-always_comb begin
-	casex({mode512, dot})
-		2'b0X: color_idx = {idx3[7], idx2[7], idx1[7], idx0[7]};
-		2'b10: color_idx = {1'b0,    1'b0,    idx1[7], idx0[7]};
-		2'b11: color_idx = {idx3[7], idx2[7], 1'b0,    1'b0   };
-	endcase
-end
+reg  [7:0] palette[16];
+wire [3:0] color_idx = {{2{~(mode512 & ~dot)}} & {idx3[7], idx2[7]}, {2{~(mode512 & dot)}} & {idx1[7], idx0[7]}};
 
 always @(posedge io_we, posedge reset) begin
 	if(reset) begin
