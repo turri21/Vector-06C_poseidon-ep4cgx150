@@ -221,7 +221,8 @@ always_comb begin
 		8'b00001111: begin pal_sel  =1; io_data = joyB_o;  end
 		8'b00010000: begin edsk_sel =1;                    end
 		8'b0001010X: begin psg_sel  =1; io_data = psg_o;   end
-		8'b00011XXX: begin fdd_sel  =fdd_ready; if(!addr[2] && fdd_ready) io_data = fdd_o; end
+		8'b000110XX: begin fdd_sel  =fdd_ready; if(fdd_ready) io_data = fdd_o; end
+		8'b000111XX: begin fdd_sel  =fdd_ready;            end
 		    default: ;
 	endcase
 end
@@ -265,7 +266,7 @@ sram sram
 	.clk_sdram(clk_ram),
 	.dout(ram_o),
 	.din( ioctl_download ? ioctl_data : cpu_o),
-	.addr(ioctl_download ? ioctl_addr : fdd_read ? fdd_addr : {read_rom, ed_page, addr}),
+	.addr(ioctl_download ? ioctl_addr : fdd_read ? {1'b1, fdd_addr} : {read_rom, ed_page, addr}),
 	.we(  ioctl_download ? ioctl_wr   : ~cpu_wr_n & ~io_write),
 	.rd(  ioctl_download ? 1'b0       : cpu_rd)
 );
@@ -303,12 +304,12 @@ end
 
 /////////////////////   FDD   /////////////////////
 wire  [7:0] fdd_o;
-wire [20:0] fdd_addr;
-wire        fdd_drive;
+wire [19:0] fdd_addr;
+reg         fdd_drive;
 reg         fdd_ready;
 wire        fdd_rd;
-wire        fdd_wr;
-reg  [24:0] fdd_size;
+reg  [19:0] fdd_size;
+reg         fdd_side;
 
 always @(negedge ioctl_download, posedge cold_reset) begin 
 	if(cold_reset) begin
@@ -316,31 +317,33 @@ always @(negedge ioctl_download, posedge cold_reset) begin
 		fdd_size  <= 0;
 	end else if(ioctl_index == 3) begin 
 		fdd_ready <= 1;
-		fdd_size  <= ioctl_addr - 25'h100000;
+		fdd_size  <= ioctl_addr[19:0];
 	end
 end
 
+always @(posedge io_wr) if(fdd_sel & addr[2]) {fdd_side, fdd_drive} <= {~cpu_o[2], cpu_o[0]};
+
 wire fdd_read = fdd_rd & io_read & fdd_sel;
-assign fdd_addr[20] = 1;
 
 wd1793 fdd
 (
 	.clk(clk_f1),
 	.reset(reset),
-	.rd(fdd_sel & io_rd),
-	.wr(fdd_sel & io_wr),
-	.addr({addr[2],~addr[1:0]}),
-	.idata(cpu_o),
-	.odata(fdd_o),
+	.ce(fdd_sel & ~addr[2]),
+	.rd(io_rd),
+	.wr(io_wr),
+	.addr(~addr[1:0]),
+	.din(cpu_o),
+	.dout(fdd_o),
 
-	.buff_size(fdd_size[19:0]),
-	.buff_addr(fdd_addr[19:0]),
+	.buff_size(fdd_size),
+	.buff_addr(fdd_addr),
 	.buff_read(fdd_rd),
-	.buff_write(fdd_wr),
-	.buff_idata(ram_o),
+	.buff_din(ram_o),
 
-	.oDRIVE(fdd_drive),
-	.iDISK_READY(fdd_drive ? 1'b0 : fdd_ready)
+	.size_code(3),
+	.side(fdd_side),
+	.ready(!fdd_drive & fdd_ready)
 );
 
 ////////////////////   VIDEO   ////////////////////

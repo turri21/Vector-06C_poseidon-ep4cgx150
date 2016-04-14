@@ -25,96 +25,111 @@
 //
 //
 
-// In Vector, addresses are inverted, as usual
-//                WD			VECTOR
-//COMMAND/STATUS	000		011	
-//DATA 				011		000
-//TRACK				001		010
-//SECTOR				010		001
-//CTL2			  				111 
 module wd1793
 (
 	input        clk,			 // clock: e.g. 3MHz
 	input        reset,	 	 // async reset
+	input        ce,
 	input        rd,			 // i/o read
 	input        wr,			 // i/o write
-	input  [2:0] addr,		 // i/o port addr
-	input  [7:0] idata,		 // i/o data in
-	output [7:0] odata,		 // i/o data out
+	input  [1:0] addr,		 // i/o port addr
+	input  [7:0] din,		    // i/o data in
+	output [7:0] dout,		 // i/o data out
+	output       drq,        // DMA request
+	output       intrq,
+	output       busy,
 
 	// Sector buffer access signals
-	input [19:0] buff_size,	 // buffer RAM address
+	input [19:0] buff_size,	 // buffer RAM size (currently not used)
 	output[19:0] buff_addr,	 // buffer RAM address
 	output       buff_read,	 // buffer RAM read enable
-	output       buff_write, // buffer RAM write enable
-	input  [7:0] buff_idata, // buffer RAM data input
-	output [7:0] buff_odata, // buffer RAM data output
+	output       buff_write, // buffer RAM write enable (not tested yet)
+	input  [7:0] buff_din,   // buffer RAM data input
+	output [7:0] buff_dout,  // buffer RAM data output
 
-	output       oDRIVE,		 // DRIVE (A/B)
-	input        iDISK_READY // =1 - disk is present
+	input  [1:0] size_code,  // sector size code
+	input        side,
+	input        ready       // =1 - disk is present
 );
 
-reg  [7:0] q;
-assign odata = q;
+// Possible track configs:
+// 0: 26 x 128  = 3.3KB
+// 1: 16 x 256  = 4.0KB
+// 2:  9 x 512  = 4.5KB
+// 3:  5 x 1024 = 5.0KB
 
-reg  [9:0] byte_addr;
-wire [7:0] off1 = {disk_track[6:0], ~wdstat_side};
-wire [9:0] off2 = {off1, 2'b00} + off1 + wdstat_sector - 1'd1;
-assign     buff_addr = {off2, byte_addr};
+assign dout  = q;
+assign drq   = s_drq;
+assign busy  = s_busy;
+assign intrq = s_intrq;
 
-reg  buff_rd, buff_wr;
+assign buff_addr  = buff_a;
 assign buff_read  = ((addr == A_DATA) && buff_rd);
 assign buff_write = ((addr == A_DATA) && buff_wr);
+assign buff_dout  = din;
 
-assign buff_odata = idata;
-assign oDRIVE = wdstat_drive;
+reg   [7:0] sectors_per_track;
+reg  [10:0] sector_size;
+reg   [9:0] byte_addr;
+reg  [19:0] buff_a;
+
+wire  [7:0] dts = {disk_track[6:0], side};
+always @* begin
+	case(size_code)
+		0: buff_a = {{1'b0, dts, 4'b0000} + {dts, 3'b000} + {dts, 1'b0} + wdstat_sector - 1'd1, byte_addr[6:0]};
+		1: buff_a = {{dts, 4'b0000}       + wdstat_sector - 1'd1, byte_addr[7:0]};
+		2: buff_a = {{dts, 3'b000}  + dts + wdstat_sector - 1'd1, byte_addr[8:0]};
+		3: buff_a = {{dts, 2'b00}   + dts + wdstat_sector - 1'd1, byte_addr[9:0]};
+	endcase
+	case(size_code)
+		0: sectors_per_track <= 26;
+		1: sectors_per_track <= 16;
+		2: sectors_per_track <= 9;
+		3: sectors_per_track <= 5;
+	endcase
+	case(size_code)
+		0: sector_size <= 128;
+		1: sector_size <= 256;
+		2: sector_size <= 512;
+		3: sector_size <= 1024;
+	endcase
+end
 
 // Register addresses				
-parameter A_COMMAND	= 3'b000;
-parameter A_STATUS	= 3'b000;
-parameter A_TRACK 	= 3'b001;
-parameter A_SECTOR	= 3'b010;
-parameter A_DATA		= 3'b011;
-parameter A_CTL2		= 3'b111; 		/* port $1C: bit0 = drive #, bit2 = head# */
+parameter A_COMMAND	      = 0;
+parameter A_STATUS	      = 0;
+parameter A_TRACK 	      = 1;
+parameter A_SECTOR	      = 2;
+parameter A_DATA		      = 3;
 
 // States
-parameter STATE_READY 		= 4'd0;	/* Initial, idle, sector data read */
-parameter STATE_WAIT_READ	= 4'd1;	/* wait until read operation completes -> STATE_READ_2/STATE_READY */
-parameter STATE_WAIT			= 4'd2;	/* NOP operation wait -> STATE_READY */
-parameter STATE_ABORT		= 4'd3;	/* Abort current command ($D0) -> STATE_READY */
-parameter STATE_READ_2   	= 4'd4;	/* Buffer-to-host: wait before asserting DRQ -> STATE_READ_3 */
-parameter STATE_READ_3		= 4'd5;	/* Buffer-to-host: load data into reg, assert DRQ -> STATE_READY */
-parameter STATE_WAIT_WRITE	= 4'd6;	/* wait until write operation completes -> STATE_READY */
-parameter STATE_READ_1		= 4'd7;	/* Buffer-to-host: increment data pointer, decrement byte count -> STATE_READ_2*/
-parameter STATE_WRITE_1		= 4'd8;	/* Host-to-buffer: wr = 1 -> STATE_WRITE_2 */
-parameter STATE_WRITE_2		= 4'd9;	/* Host-to-buffer: wr = 0, next addr -> STATE_WRITESECT/STATE_WAIT_WRITE */
-parameter STATE_WRITESECT	= 4'd10; /* Host-to-buffer: wait data from host -> STATE_WRITE_1 */
-parameter STATE_READSECT	= 4'd11; /* Buffer-to-host */
-parameter STATE_WAIT_2		= 4'd12;
-
-parameter STATE_ENDCOMMAND	= 4'd14; /* All commands end here -> STATE_ENDCOMMAND2 */
-parameter STATE_DEAD		   = 4'd15; /* Total cessation, for debugging */
-
-// Fixed parameters that should be variables
-parameter SECTOR_SIZE 		= 11'd1024;
-parameter SECTORS_PER_TRACK = 8'd5;
-
+parameter STATE_READY 		= 0;	/* Initial, idle, sector data read */
+parameter STATE_WAIT_READ	= 1;	/* wait until read operation completes -> STATE_READ_2/STATE_READY */
+parameter STATE_WAIT			= 2;	/* NOP operation wait -> STATE_READY */
+parameter STATE_ABORT		= 3;	/* Abort current command ($D0) -> STATE_READY */
+parameter STATE_READ_2   	= 4;	/* Buffer-to-host: wait before asserting DRQ -> STATE_READ_3 */
+parameter STATE_READ_3		= 5;	/* Buffer-to-host: load data into reg, assert DRQ -> STATE_READY */
+parameter STATE_WAIT_WRITE	= 6;	/* wait until write operation completes -> STATE_READY */
+parameter STATE_READ_1		= 7;	/* Buffer-to-host: increment data pointer, decrement byte count -> STATE_READ_2*/
+parameter STATE_WRITE_1		= 8;	/* Host-to-buffer: wr = 1 -> STATE_WRITE_2 */
+parameter STATE_WRITE_2		= 9;	/* Host-to-buffer: wr = 0, next addr -> STATE_WRITESECT/STATE_WAIT_WRITE */
+parameter STATE_WRITESECT	= 10; /* Host-to-buffer: wait data from host -> STATE_WRITE_1 */
+parameter STATE_READSECT	= 11; /* Buffer-to-host */
+parameter STATE_WAIT_2		= 12;
+parameter STATE_ENDCOMMAND	= 14; /* All commands end here -> STATE_ENDCOMMAND2 */
 
 // State variables
-reg  [7:0] 	wdstat_track;
-reg  [7:0]	wdstat_sector;
-wire [7:0]	wdstat_status;
-reg  [7:0]	wdstat_datareg;
-reg  [7:0]	wdstat_command;			// command register
+reg   [7:0] wdstat_track;
+reg   [7:0] wdstat_sector;
+reg   [7:0] wdstat_datareg;
+reg   [7:0] wdstat_command;			// command register
 reg			wdstat_pending;			// command loaded, pending execution
 reg 			wdstat_stepdirection;	// last step direction
 reg			wdstat_multisector;		// indicates multisector mode
-reg			wdstat_side;				// current side
-reg			wdstat_drive;				// current drive
 
-reg  [7:0]	disk_track;					// "real" heads position
+reg   [7:0] disk_track;					// "real" heads position
 reg  [10:0]	data_rdlength;				// this many bytes to transfer during read/write ops
-reg  [3:0]	state;						// teh state
+reg   [3:0] state;
 
 // common status bits
 reg			s_readonly = 0, s_crcerr;
@@ -128,124 +143,110 @@ reg 			cmd_mode;
 reg	[1:0]	s_drq_busy;
 wire			s_drq  = s_drq_busy[1];
 wire			s_busy = s_drq_busy[0];
-
-// Timer for keeping DRQ pace
-reg [3:0] 	read_timer;
-
-// Reusable expressions
-wire 	    	wStepDir   = wdstat_command[6] ? wdstat_command[5] : wdstat_stepdirection;
-wire [7:0]  wNextTrack = wStepDir ? disk_track - 8'd1 : disk_track + 8'd1;
-
-wire [10:0]	wRdLengthMinus1 = data_rdlength - 1'b1;
-wire [10:0]	wBuffAddrPlus1  = byte_addr + 1'b1;
+reg         s_intrq;
 
 // Status register
-assign  wdstat_status = cmd_mode == 0 ? 	
-	{~iDISK_READY, s_readonly, s_headloaded, s_seekerr, s_crcerr, !disk_track, s_index, s_busy | wdstat_pending} :
-	{~iDISK_READY, s_readonly, s_wrfault,    s_seekerr, s_crcerr, s_lostdata,  s_drq,   s_busy | wdstat_pending};
+wire  [7:0] wdstat_status = cmd_mode == 0 ? 	
+	{~ready, s_readonly, s_headloaded, s_seekerr, s_crcerr, !disk_track, s_index, s_busy | wdstat_pending} :
+	{~ready, s_readonly, s_wrfault,    s_seekerr, s_crcerr, s_lostdata,  s_drq,   s_busy | wdstat_pending};
 	
 // Watchdog	
-reg	watchdog_set;
-wire	watchdog_bark;
+reg	      watchdog_set;
+wire	      watchdog_bark;
 watchdog	dogbert(.clk(clk), .cock(watchdog_set), .q(watchdog_bark));
 
-reg read_type;
-reg [7:0] read_addr[6];
-
+reg   [7:0] read_addr[6];
+reg   [7:0] q;
 always @* begin
 	case (addr)
 		A_TRACK:  q = wdstat_track;
 		A_SECTOR: q = wdstat_sector;
 		A_STATUS: q = wdstat_status;
-		A_CTL2:	  q = {5'b11111,wdstat_side,1'b0,wdstat_drive};
-		A_DATA:	  q = (state == STATE_READY) ? wdstat_datareg : buff_rd ? buff_idata : read_addr[byte_addr[2:0]];
-		default:  q = 8'hff;
+		A_DATA:	 q = (state == STATE_READY) ? wdstat_datareg : buff_rd ? buff_din : read_addr[byte_addr[2:0]];
 	endcase
 end
 
-always @(posedge clk or posedge reset) begin: _wdmain
+reg         buff_rd;
+reg         buff_wr;
+
+// Reusable expressions
+wire 	    	wStepDir   = wdstat_command[6] ? wdstat_command[5] : wdstat_stepdirection;
+wire  [7:0] wNextTrack = wStepDir ? disk_track - 8'd1 : disk_track + 8'd1;
+wire [10:0]	wRdLengthMinus1 = data_rdlength - 1'b1;
+wire [10:0]	wBuffAddrPlus1  = byte_addr + 1'b1;
+
+wire        rde = rd & ce;
+wire        wre = wr & ce;
+always @(posedge clk or posedge reset) begin
 	reg old_wr, old_rd;
 	reg [2:0] cur_addr;
 	reg read_data, write_data;
+	reg read_type;
 	integer wait_time;
+
+	// Timer for keeping DRQ pace
+	reg   [3:0] read_timer;
+	reg   [9:0] seektimer;
 
 	if(reset) begin
 		read_data <= 0;
 		write_data <= 0;
 		wdstat_multisector <= 0;
 		wdstat_stepdirection <= 0;
-		disk_track <= 8'hff;
+		disk_track <= 0;
 		wdstat_track <= 0;
 		wdstat_sector <= 0;
-		{wdstat_side,wdstat_drive} <= 2'b00;
 		data_rdlength <= 0;
 		byte_addr <=0;
 		{buff_rd,buff_wr} <= 0;
 		wdstat_multisector <= 1'b0;
 		state <= STATE_READY;
 		cmd_mode <= 1'b0;
-		{s_headloaded, s_seekerr, s_crcerr, s_index} <= 0;
+		{s_headloaded, s_seekerr, s_crcerr, s_intrq, s_index} <= 0;
 		{s_wrfault, s_lostdata} <= 0;
 		s_drq_busy <= 2'b00;
 		wdstat_pending <= 0;
 		watchdog_set <= 0;
-	end else if (state == STATE_DEAD) begin
-		s_drq_busy <= 2'b11;
-		s_seekerr <= 1;
-		s_wrfault <= 1;
-		s_crcerr <= 1;
+		seektimer <= 10'h3FF;
 	end else begin
-		old_wr <=wr;
-		old_rd <=rd;
+		old_wr <=wre;
+		old_rd <=rde;
 
-		if((!old_rd && rd) || (!old_wr && wr)) cur_addr <= addr;
+		if((!old_rd && rde) || (!old_wr && wre)) cur_addr <= addr;
 
 		//Register read operations
-		if(old_rd && !rd && (cur_addr == A_STATUS)) s_index <=0;
+		if(old_rd && !rde && (cur_addr == A_STATUS)) {s_intrq, s_index} <= 0;
 
 		//end of data reading
-		if(old_rd && !rd && (cur_addr == A_DATA)) read_data <=1;
+		if(old_rd && !rde && (cur_addr == A_DATA)) read_data <=1;
 
 		//end of data writing
-		if(old_wr && !wr && (cur_addr == A_DATA)) write_data <=1;
+		if(old_wr && !wre && (cur_addr == A_DATA)) write_data <=1;
 
 		/* Register write operations */
-		if (!old_wr & wr) begin
+		if (!old_wr & wre) begin
 			case (addr)
-				A_TRACK:
-					if (!s_busy) begin
-						wdstat_track <= idata;
-					end 
-
-				A_SECTOR: 
-					if (!s_busy) begin
-						wdstat_sector <= idata;
-					end
-
-				A_CTL2: {wdstat_side, wdstat_drive} <= {idata[2], idata[0]};
-
 				A_COMMAND:
-					if (idata[7:4] == 4'hD) begin
-						// interrupt
-						cmd_mode <= 0;
+					begin
+						s_intrq <= 0;
+						if (din[7:4] == 4'hD) begin
+							// interrupt
+							cmd_mode <= 0;
 
-						if (state != STATE_READY) state <= STATE_ABORT;
-							else {s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
+							if (state != STATE_READY) state <= STATE_ABORT;
+								else {s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
 
-					end else begin
-						if (wdstat_pending) begin
-							wdstat_sector <= idata;
-							wdstat_track  <= {2'b00,s_drq_busy,state};
-							state <= STATE_DEAD;
 						end else begin
-							wdstat_command <= idata;
-							wdstat_pending <= 1;
+							if(!wdstat_pending) begin
+								wdstat_command <= din;
+								wdstat_pending <= 1;
+							end
 						end
 					end
 
-				A_DATA: wdstat_datareg <= idata;
-
-				default:;
+				A_TRACK:  if (!s_busy) wdstat_track <= din;
+				A_SECTOR: if (!s_busy) wdstat_sector <= din;
+				A_DATA:   wdstat_datareg <= din;
 			endcase
 		end
 
@@ -325,7 +326,7 @@ always @(posedge clk or posedge reset) begin: _wdmain
 							{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
 							
 							wdstat_multisector <= wdstat_command[4];
-							data_rdlength <= SECTOR_SIZE;
+							data_rdlength <= sector_size;
 							state <= STATE_WAIT_READ;
 							read_type <=1;
 						end
@@ -335,7 +336,7 @@ always @(posedge clk or posedge reset) begin: _wdmain
 							{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
 							wdstat_multisector <= wdstat_command[4];
 							
-							data_rdlength <= SECTOR_SIZE;
+							data_rdlength <= sector_size;
 							byte_addr <= 0;
 							write_data <= 0;
 							buff_wr <=1;
@@ -354,15 +355,20 @@ always @(posedge clk or posedge reset) begin: _wdmain
 							read_type <=0;
 
 							read_addr[0] <= disk_track;
-							read_addr[1] <= {7'b0, ~wdstat_side};
+							read_addr[1] <= {7'b0, side};
 							read_addr[2] <= wdstat_sector;
-							read_addr[3] <= 8'd3;
+							read_addr[3] <= size_code;
 							read_addr[4] <= 8'd0;
 							read_addr[5] <= 8'd0;
 						end
 					4'hE,	// READ TRACK
 					4'hF:	// WRITE TRACK
-							s_drq_busy <= 2'b00;
+						begin
+							{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
+							if(wdstat_command[4]) s_wrfault <= 1; // read-only
+							s_drq_busy <= 2'b01;
+							state <= STATE_WAIT;
+						end
 					default:s_drq_busy <= 2'b00;
 					endcase
 				end
@@ -370,19 +376,27 @@ always @(posedge clk or posedge reset) begin: _wdmain
 
 		STATE_WAIT_READ:
 			begin
-				// s_ready == 0 means that in fact SD card was removed or some 
-				// other kind of unrecoverable error has happened
-				if (!iDISK_READY) begin
+				if (!ready) begin
 					// FAIL
 					s_seekerr <= 1;
 					s_crcerr <= 1;
 					state <= STATE_ENDCOMMAND;
 				end else begin
-					buff_rd <= read_type;
-					byte_addr <=0;
-					state <= STATE_READ_2;
+					seektimer <= seektimer - 1'b1;
+					if(!seektimer) begin
+						if(wdstat_multisector && (wdstat_sector > sectors_per_track)) begin
+							if(wdstat_multisector) s_seekerr <= 1;
+							wdstat_multisector <= 1'b0;
+							state <= STATE_ENDCOMMAND;
+						end else begin
+							buff_rd <= read_type;
+							byte_addr <=0;
+							state <= STATE_READ_2;
+						end
+					end
 				end
 			end
+
 		STATE_READ_1:
 			begin
 				// increment data pointer, decrement byte count
@@ -425,11 +439,12 @@ always @(posedge clk or posedge reset) begin: _wdmain
 					
 					if (wRdLengthMinus1 == 0) begin
 						// either read the next sector, or stop if this is track end
-						if (wdstat_multisector && (wdstat_sector < SECTORS_PER_TRACK)) begin
+						if (wdstat_multisector) begin
 							wdstat_sector <= wdstat_sector + 1'b1;
-							data_rdlength <= SECTOR_SIZE;
+							data_rdlength <= sector_size;
 							state <= STATE_WAIT_READ;
 						end else begin
+							if(wdstat_multisector) s_seekerr <= 1;
 							wdstat_multisector <= 1'b0;
 							state <= STATE_ENDCOMMAND;
 						end
@@ -442,14 +457,14 @@ always @(posedge clk or posedge reset) begin: _wdmain
 
 		STATE_WAIT_WRITE:
 			begin
-				if (!iDISK_READY) begin
+				if (!ready) begin
 					s_wrfault <= 1;
 					state <= STATE_ENDCOMMAND;
 				end else begin
-					if (wdstat_multisector && wdstat_sector < SECTORS_PER_TRACK) begin
+					if (wdstat_multisector && wdstat_sector < sectors_per_track) begin
 						wdstat_sector <= wdstat_sector + 1'b1;
 						s_drq_busy <= 2'b11;
-						data_rdlength <= SECTOR_SIZE;
+						data_rdlength <= sector_size;
 						byte_addr <= 0;
 						state <= STATE_WRITESECT;
 					end else begin
@@ -492,7 +507,7 @@ always @(posedge clk or posedge reset) begin: _wdmain
 
 		STATE_WAIT:
 			begin
-				wait_time = 40000;
+				wait_time = 4000;
 				state <= STATE_WAIT_2;
 			end
 		STATE_WAIT_2:
@@ -507,6 +522,8 @@ always @(posedge clk or posedge reset) begin: _wdmain
 				{buff_rd,buff_wr} <= 0;
 				state <= STATE_READY;
 				s_drq_busy <= 2'b00;
+				seektimer <= 10'h3FF;
+				s_intrq <= 1;
 			end
 		endcase
 	end
