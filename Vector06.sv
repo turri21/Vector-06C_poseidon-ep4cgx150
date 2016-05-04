@@ -12,8 +12,6 @@
 // Based on code from Dmitry Tselikov and Viacheslav Slavinsky
 // 
 
-`define WITH_LEDs
-
 module Vector06
 (
    input         CLOCK_27,  // Input clock 27 MHz
@@ -50,10 +48,10 @@ module Vector06
 );
 
 ///////////////   MIST ARM I/O   /////////////////
-assign LED = ~(ioctl_download | fdd_rd);
+assign LED = ~(ioctl_download | ioctl_erase | fdd_rd);
 
-wire scandoubler_disable;
-wire ps2_kbd_clk, ps2_kbd_data;
+wire        scandoubler_disable;
+wire        ps2_kbd_clk, ps2_kbd_data;
 
 wire  [7:0] status;
 wire  [1:0] buttons;
@@ -64,10 +62,13 @@ wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
 wire        ioctl_download;
+wire        ioctl_erase;
 wire  [4:0] ioctl_index;
 
-mist_io #(.STRLEN(97)) user_io 
+mist_io #(.STRLEN(97)) mist_io 
 (
+	.clk_sys(clk_sys),
+
 	.conf_str
 	(
 	     "VECTOR06;ROM;F2,EDD;F3,FDD;O4,Turbo,Off,On;O7,Reset Palette,Yes,No;T5,Enter to App;T6,Cold Reboot"
@@ -88,13 +89,13 @@ mist_io #(.STRLEN(97)) user_io
 	.ps2_kbd_data(ps2_kbd_data),
 
 	.SPI_SS2(SPI_SS2),
-	.force_erase(cold_reset),
-	.downloading(ioctl_download),
-	.index(ioctl_index),
-	.clk(clk_sys),
-	.wr(ioctl_wr),
-	.addr(ioctl_addr),
-	.dout(ioctl_data)
+	.ioctl_force_erase(cold_reset),
+	.ioctl_download(ioctl_download),
+	.ioctl_erasing(ioctl_erase),
+	.ioctl_index(ioctl_index),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_addr(ioctl_addr),
+	.ioctl_dout(ioctl_data)
 );
 
 ////////////////////   CLOCKS   ///////////////////
@@ -103,43 +104,49 @@ pll pll
 (
 	.inclk0(CLOCK_27),
 	.locked(locked),
-	.c0(clk_ram),
-	.c1(SDRAM_CLK),
-	.c2(clk_sys),
-	.c3(clk_psg)
+	.c0(clk_sys),
+	.c1(SDRAM_CLK)
 );
 
-wire clk_sys;       // 24Mhz
-wire clk_ram;       // 96MHz
-wire clk_psg;       // 1.75MHz
-reg  clk_pit;       // 1.5MHz
-                    //
-                    // strobes:
-reg  clk_f1, clk_f2;// 3MHz/6MHz
-reg  clk_ps2;       // 14KHz
+wire clk_sys;      // 96MHz
+reg  ce_f1, ce_f2; // 3MHz/6MHz
+reg  ce_12mp;
+reg  ce_12mn;
+reg  ce_psg;       // 1.75MHz
+reg  clk_pit;      // 1.5MHz
+reg  clk_ps2;      // 14KHz
 
 always @(negedge clk_sys) begin
-	reg [4:0] div = 0;
-	reg turbo;
-	int ps2_div;
+	reg [6:0] div = 0;
+	reg [5:0] psg_div = 0;
+	reg       turbo;
+	int       ps2_div;
 
 	div <= div + 1'd1;
-	clk_pit <= div[3];
-	turbo <= (div[2:0] == 7) & status[4];
 
+	if(&div) turbo <= status[4];
 	if(turbo) begin
-		clk_f1 <= (div[2:0] == 0) | (div[2:0] == 4);
-		clk_f2 <= (div[2:0] == 2) | (div[2:0] == 6);
+		ce_f1 <= !div[3] & !div[2:0];
+		ce_f2 <=  div[3] & !div[2:0];
 		cpu_ready <= 1;
 	end else begin
-		clk_f1 <= div[2:0] == 0;
-		clk_f2 <= div[2:0] == 4;
-		if(div[4:2]==3'b100) cpu_ready <= 1;
-			else if(!div[2:0] & cpu_sync & mreq) cpu_ready <= 0;
+		ce_f1 <= !div[4] & !div[3:0];
+		ce_f2 <=  div[4] & !div[3:0];
+		if(div[6:4]==3'b100) cpu_ready <= 1;
+			else if(!div[4:2] & cpu_sync & mreq) cpu_ready <= 0;
 	end
+	
+	ce_12mp <= !div[2] & !div[1:0];
+	ce_12mn <=  div[2] & !div[1:0];
+
+	psg_div <= psg_div + 1'b1;
+	if(psg_div == 54) psg_div <= 0;
+	ce_psg <= !psg_div;
+
+	clk_pit <= div[5];
 
 	ps2_div <= ps2_div+1;
-	if(ps2_div == 856) begin 
+	if(ps2_div == 3427) begin 
 		ps2_div <=0;
 		clk_ps2 <= ~clk_ps2;
 	end
@@ -151,13 +158,13 @@ reg reset = 1;
 reg rom_enable = 1;
 
 //wait for boot rom
-integer reset_timer = 15000000;
+integer reset_timer = 90000000;
 
 wire RESET = status[0] | status[5] | status[6] | buttons[1] | reset_key[0];
 reg  first_cycle = 1;
 
 always @(posedge clk_sys) begin
-	if (RESET || ioctl_download || reset_timer) begin
+	if(RESET || ioctl_download || reset_timer) begin
 		if(status[6]) reset_timer <= 100;
 		reset <=1;
 		rom_enable <=(rom_enable & ~((ioctl_download & (ioctl_index == 1)) | reset_key[2] | status[5]));
@@ -184,7 +191,11 @@ wire        cpu_inte;
 reg         cpu_int;
 
 reg   [7:0] status_word;
-always @(posedge cpu_sync) status_word <= cpu_o;
+always @(posedge clk_sys) begin
+	reg old_sync;
+	old_sync <= cpu_sync;
+	if(~old_sync & cpu_sync) status_word <= cpu_o;
+end
 
 wire int_ack  = status_word[0];
 wire write_n  = status_word[1];
@@ -242,8 +253,8 @@ wire io_wr = io_write & ~cpu_wr_n;
 k580vm80a cpu
 (
    .pin_clk(clk_sys),
-   .pin_f1(clk_f1),
-   .pin_f2(clk_f2),
+   .pin_f1(ce_f1),
+   .pin_f2(ce_f2),
    .pin_reset(reset),
    .pin_a(addr),
    .pin_dout(cpu_o),
@@ -258,22 +269,28 @@ k580vm80a cpu
 );
 
 ////////////////////   MEM   ////////////////////
-wire[7:0] ram_o;
+wire  [7:0] ram_o;
 sram sram
 ( 
 	.*,
 	.init(!locked),
-	.clk_sdram(clk_ram),
+	.clk_sdram(clk_sys),
 	.dout(ram_o),
-	.din( ioctl_download ? ioctl_data : cpu_o),
-	.addr(ioctl_download ? ioctl_addr : fdd_read ? {1'b1, fdd_addr} : {read_rom, ed_page, addr}),
-	.we(  ioctl_download ? ioctl_wr   : ~cpu_wr_n & ~io_write),
-	.rd(  ioctl_download ? 1'b0       : cpu_rd)
+	.din( (ioctl_download | ioctl_erase) ? ioctl_data : cpu_o),
+	.addr((ioctl_download | ioctl_erase) ? ioctl_addr : fdd_read ? {1'b1, fdd_addr} : {read_rom, ed_page, addr}),
+	.we(  (ioctl_download | ioctl_erase) ? ioctl_wr   : ~cpu_wr_n & ~io_write),
+	.rd(  (ioctl_download | ioctl_erase) ? 1'b0       : cpu_rd),
+	.ready()
 );
 
 reg  [15:0] rom_size = 0;
 wire read_rom = rom_enable && (addr<rom_size) && !ed_page && ram_read;
-always @(negedge ioctl_download) if(!ioctl_index) rom_size <= ioctl_addr[15:0];
+always @(posedge clk_sys) begin
+	reg old_download;
+
+	old_download <= ioctl_download;
+	if(~ioctl_download & old_download & !ioctl_index) rom_size <= ioctl_addr[15:0] + 1'b1;
+end
 
 wire [7:0] rom_o;
 bios rom(.address(addr[10:0]), .clock(clk_sys), .q(rom_o));
@@ -283,9 +300,12 @@ reg  [2:0] ed_page;
 reg  [7:0] ed_reg;
 
 wire edsk_we = io_wr & edsk_sel;
-always @(posedge edsk_we, posedge reset) begin
+always @(posedge clk_sys) begin
+	reg old_we;
+
+	old_we <= edsk_we;
 	if(reset) ed_reg <= 0;
-		else ed_reg <= cpu_o;
+		else if(~old_we & edsk_we) ed_reg <= cpu_o;
 end
 
 wire ed_win   = addr[15] & ((addr[13] ^ addr[14]) | (ed_reg[7] & addr[13] & addr[14]) | (ed_reg[6] & ~addr[13] & ~addr[14]));
@@ -310,26 +330,30 @@ reg         fdd_ready;
 wire        fdd_rd;
 reg  [19:0] fdd_size;
 reg         fdd_side;
+wire        fdd_read = fdd_rd & io_read & fdd_sel;
 
-always @(negedge ioctl_download, posedge cold_reset) begin 
+always @(posedge clk_sys) begin
+	reg old_download, old_wr;
+
+	old_download <= ioctl_download;
 	if(cold_reset) begin
 		fdd_ready <= 0;
 		fdd_size  <= 0;
-	end else if(ioctl_index == 3) begin 
+	end else if(~ioctl_download & old_download & (ioctl_index == 3)) begin 
 		fdd_ready <= 1;
-		fdd_size  <= ioctl_addr[19:0];
+		fdd_size  <= ioctl_addr[19:0] + 1'd1;
 	end
+
+	old_wr <= io_wr;
+	if(~old_wr & io_wr & fdd_sel & addr[2]) {fdd_side, fdd_drive} <= {~cpu_o[2], cpu_o[0]};
 end
-
-always @(posedge io_wr) if(fdd_sel & addr[2]) {fdd_side, fdd_drive} <= {~cpu_o[2], cpu_o[0]};
-
-wire fdd_read = fdd_rd & io_read & fdd_sel;
 
 wd1793 fdd
 (
-	.clk(clk_f1),
+	.clk_sys(clk_sys),
+	.ce(ce_f1),
 	.reset(reset),
-	.ce(fdd_sel & ~addr[2]),
+	.io_en(fdd_sel & ~addr[2]),
 	.rd(io_rd),
 	.wr(io_wr),
 	.addr(~addr[1:0]),
@@ -353,7 +377,6 @@ video video
 (
 	.*,
 	.reset(reset & ~status[7]),
-	.clk_24m(clk_sys),
 	.addr(addr),
 	.din(cpu_o),
 	.we(~cpu_wr_n && ~io_write && !ed_page),
@@ -365,9 +388,12 @@ video video
 	.retrace(retrace)
 );
 
-always @(posedge retrace, negedge cpu_inte) begin
+always @(posedge clk_sys) begin
+	reg old_retrace;
+	old_retrace <= retrace;
+	
 	if(!cpu_inte) cpu_int <= 0;
-		else cpu_int <= 1;
+		else if(~old_retrace & retrace) cpu_int <= 1;
 end
 
 ////////////////////   KBD   ////////////////////
@@ -375,7 +401,7 @@ wire [7:0] kbd_o;
 wire [2:0] kbd_shift;
 wire [2:0] reset_key;
 
-rk_kbd kbd
+keyboard kbd
 (
 	.clk(clk_sys), 
 	.reset(cold_reset),
@@ -395,7 +421,8 @@ wire [7:0] ppi1_c;
 
 k580vv55 ppi1
 (
-	.reset(0), 
+	.clk_sys(clk_sys),
+	.reset(0),
 	.addr(~addr[1:0]), 
 	.we_n(~(io_wr & ppi1_sel)),
 	.idata(cpu_o), 
@@ -416,16 +443,20 @@ wire [7:0] joyA_o  = ~{joyA[5], joyA[4], 2'b00, joyA[2], joyA[3], joyA[1], joyA[
 wire [7:0] joyB_o  = ~{joyB[5], joyB[4], 2'b00, joyB[2], joyB[3], joyB[1], joyB[0]};
 
 reg  [7:0] joy_port;
-wire joy_we = io_wr & joy_sel;
-always @(posedge joy_we, posedge reset) begin
+wire       joy_we = io_wr & joy_sel;
+
+always @(posedge clk_sys) begin
+	reg old_we;
+	
+	old_we <= joy_we;
 	if(reset) joy_port <= 0;
-	else begin 
+	else if(~old_we & joy_we) begin
 		if(addr[0]) joy_port <= cpu_o;
 			else if(!cpu_o[7]) joy_port[cpu_o[3:1]] <= cpu_o[0];
 	end
 end
 
-reg [7:0] joyP_o;
+reg  [7:0] joyP_o;
 always_comb begin
 	case(joy_port[6:5]) 
 		2'b00: joyP_o = joyA_o & joyB_o;
@@ -436,7 +467,7 @@ always_comb begin
 end
 
 ////////////////////   SOUND   ////////////////////
-wire tapein = 1'b0;
+wire       tapein = 0;
 
 wire [7:0] pit_o;
 wire [2:0] pit_out;
@@ -468,7 +499,8 @@ wire [5:0] psg_active;
 
 ym2149 ym2149
 (
-	.CLK(clk_psg),
+	.CLK(clk_sys),
+	.CE(ce_psg),
 	.RESET(reset),
 	.BDIR(io_wr & psg_sel),
 	.BC(addr[0]),
@@ -482,21 +514,22 @@ ym2149 ym2149
 	.MODE(0)
 );
 
-integer covox_timeout;
-always @(posedge clk_sys) begin
-	if(reset | rom_enable) covox_timeout <= 50000000;
-		else if(covox_timeout) covox_timeout <= covox_timeout -1;
-end
-
 reg  [7:0] covox;
-wire       covox_mute = (covox_timeout != 0);
-wire       vox_we = io_wr & vox_sel & ~covox_mute;
-always @(posedge vox_we, posedge reset) begin
+integer    covox_timeout;
+wire       vox_we = io_wr & vox_sel & !covox_timeout;
+
+always @(posedge clk_sys) begin
+	reg old_we;
+	
+	if(reset | rom_enable) covox_timeout <= 200000000;
+		else if(covox_timeout) covox_timeout <= covox_timeout - 1;
+
+	old_we <= vox_we;
 	if(reset) covox <= 0;
-		else covox <= cpu_o;
+		else if(~old_we & vox_we) covox <= cpu_o;
 end
 
-sigma_delta_dac #(.MSBI(10)) dac_l
+sigma_delta_dac #(.MSBI(9)) dac_l
 (
 	.CLK(clk_sys),
 	.RESET(reset),
@@ -504,7 +537,7 @@ sigma_delta_dac #(.MSBI(10)) dac_l
 	.DACout(AUDIO_L)
 );
 
-sigma_delta_dac #(.MSBI(10)) dac_r
+sigma_delta_dac #(.MSBI(9)) dac_r
 (
 	.CLK(clk_sys),
 	.RESET(reset),
