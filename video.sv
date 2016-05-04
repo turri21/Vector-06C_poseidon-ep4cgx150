@@ -26,7 +26,9 @@ module video
 	input         reset,
 
 	// Clocks
-	input         clk_24m, // Video clock 24 MHz
+	input         clk_sys,
+	input         ce_12mp,
+	input         ce_12mn,
 
 	// OSD data
 	input         SPI_SCK,
@@ -56,45 +58,21 @@ module video
 	output        retrace
 );
 
-assign retrace = VSync;
-
-reg clk_12;
-always @(posedge clk_24m) clk_12 <= !clk_12;
+assign     retrace = VSync;
 
 reg  [9:0] hc;
 reg  [8:0] vc;
 wire [8:0] vcr = vc + ~roll;
 reg  [7:0] roll;
+reg        HBlank, HSync;
+reg        VBlank, VSync;
+reg        viden, dot;
+reg  [7:0] idx0, idx1, idx2, idx3;
+wire[31:0] vram_o;
 
-reg  HBlank, HSync;
-reg  VBlank, VSync;
-
-always @(posedge clk_12) begin
-	if(hc == 767) begin 
-		hc <=0;
-		if (vc == 311) begin 
-			vc <= 9'd0;
-		end else begin
-			vc <= vc + 1'd1;
-
-			if(vc == 271) VBlank <= 1;
-			if(vc == 271) VSync  <= 1;
-			if(vc == 281) VSync  <= 0;
-			if(vc == 295) VBlank <= 0;
-		end
-	end else hc <= hc + 1'd1;
-
-	if((vc == 311) && (hc == 759)) roll <= scroll;
-	if(hc == 563) HBlank <= 1;
-	if(hc == 597) HSync  <= 1;
-	if(hc == 653) HSync  <= 0;
-	if(hc == 723) HBlank <= 0;
-end
-
-wire [31:0] vram_o;
 dpram vram
 (
-	.clock(~clk_24m),
+	.clock(clk_sys),
 	.wraddress({addr[12:0], addr[14:13]}),
 	.data(din),
 	.wren(we & addr[15]),
@@ -102,30 +80,54 @@ dpram vram
 	.q(vram_o)
 );
 
-reg viden, dot;
-reg [7:0] idx0, idx1, idx2, idx3;
-
-always @(negedge clk_12) begin
+always @(posedge clk_sys) begin
 	reg [7:0] border_d;
 
-	if(hc[0]) begin
-		idx0 <= {idx0[6:0], border_d[4]};
-		idx1 <= {idx1[6:0], border_d[5]};
-		idx2 <= {idx2[6:0], border_d[6]};
-		idx3 <= {idx3[6:0], border_d[7]};
-		if((hc[3:1] == 2) & ~hc[9] & ~vc[8]) {idx0, idx1, idx2, idx3} <= vram_o;
+	if(ce_12mp) begin
+		if(hc == 767) begin 
+			hc <=0;
+			if (vc == 311) begin 
+				vc <= 9'd0;
+			end else begin
+				vc <= vc + 1'd1;
 
-		border_d <= {border_d[3:0], border};
+				if(vc == 271) VBlank <= 1;
+				if(vc == 271) VSync  <= 1;
+				if(vc == 281) VSync  <= 0;
+				if(vc == 295) VBlank <= 0;
+			end
+		end else hc <= hc + 1'd1;
+
+		if((vc == 311) && (hc == 759)) roll <= scroll;
+		if(hc == 563) HBlank <= 1;
+		if(hc == 597) HSync  <= 1;
+		if(hc == 653) HSync  <= 0;
+		if(hc == 723) HBlank <= 0;
 	end
 
-	dot   <= ~hc[0];
-	viden <= ~HBlank & ~VBlank;
+	if(ce_12mn) begin
+		if(hc[0]) begin
+			idx0 <= {idx0[6:0], border_d[4]};
+			idx1 <= {idx1[6:0], border_d[5]};
+			idx2 <= {idx2[6:0], border_d[6]};
+			idx3 <= {idx3[6:0], border_d[7]};
+			if((hc[3:1] == 2) & ~hc[9] & ~vc[8]) {idx0, idx1, idx2, idx3} <= vram_o;
+
+			border_d <= {border_d[3:0], border};
+		end
+
+		dot   <= ~hc[0];
+		viden <= ~HBlank & ~VBlank;
+	end
 end
 
 reg  [7:0] palette[16];
 wire [3:0] color_idx = {{2{~(mode512 & ~dot)}} & {idx3[7], idx2[7]}, {2{~(mode512 & dot)}} & {idx1[7], idx0[7]}};
 
-always @(posedge io_we, posedge reset) begin
+always @(posedge clk_sys) begin
+	reg old_we;
+	old_we <= io_we;
+
 	if(reset) begin
 		palette[0]  <= ~8'b11111111;
 		palette[1]  <= ~8'b01010101;
@@ -143,7 +145,7 @@ always @(posedge io_we, posedge reset) begin
 		palette[13] <= ~8'b11010010;
 		palette[14] <= ~8'b10010000;
 		palette[15] <= ~8'b00000010;
-	end else begin
+	end else if(~old_we & io_we) begin
 		palette[color_idx] <= din;
 	end
 end
@@ -159,22 +161,24 @@ wire [5:0] B_out;
 osd #(10'd0, 10'd0, 3'd4) osd
 (
 	.*,
-	.clk_pix(clk_12),
+	.ce_pix(ce_12mp),
 	.R_in({R, R}),
 	.G_in({G, G}),
 	.B_in({B, B, B})
 );
 
-wire hs_out, vs_out;
+wire       hs_out, vs_out;
 wire [5:0] r_out;
 wire [5:0] g_out;
 wire [5:0] b_out;
 
 scandoubler scandoubler(
 	.*,
-	.clk_x2(clk_24m),
+	.ce_x2(ce_12mp | ce_12mn),
+	.ce_x1(ce_12mp),
+
 	.scanlines(2'b00),
-	    
+
 	.hs_in(HSync),
 	.vs_in(VSync),
 	.r_in(R_out),
