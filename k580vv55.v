@@ -19,7 +19,9 @@
 
 module k580vv55
 (
-	input           reset, 
+	input           reset,
+	input           clk_sys,
+
 	input     [1:0] addr,
 	input           we_n,
 	input     [7:0] idata,
@@ -50,19 +52,24 @@ always @* begin
 	endcase
 end
 
-always @(negedge we_n, posedge reset) begin
+always @(posedge clk_sys, posedge reset) begin
+	reg old_we;
+
 	if (reset) begin
 		{opa_r,opb_r,opc_r,mode} <= {8'h00,8'h00,8'h00,8'hFF};
 	end else begin
-		case(addr)
-			0: opa_r <= idata;
-			1: opb_r <= idata;
-			2: opc_r <= idata;
-			default: begin
-				if (~idata[7]) opc_r[idata[3:1]] <= idata[0];
-					else {opa_r,opb_r,opc_r,mode} <= {8'h00,8'h00,8'h00,idata};
-			end
-		endcase
+		old_we <= we_n;
+		if(old_we & ~we_n) begin
+			case(addr)
+				0: opa_r <= idata;
+				1: opb_r <= idata;
+				2: opc_r <= idata;
+				default: begin
+					if (~idata[7]) opc_r[idata[3:1]] <= idata[0];
+						else {opa_r,opb_r,opc_r,mode} <= {8'h00,8'h00,8'h00,idata};
+				end
+			endcase
+		end
 	end
 end
 
