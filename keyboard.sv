@@ -10,11 +10,12 @@
 // An open implementation of Radio-86RK keyboard
 //
 // Author: Dmitry Tselikov   http://bashkiria-2m.narod.ru/
-// 
-// Design File: rk_kbd.v
+//
+//
+// Modified for Vector06 (Sorgelig)
 //
 
-module rk_kbd
+module keyboard
 (
 	input           clk,
 	input           reset,
@@ -26,9 +27,14 @@ module rk_kbd
 	output reg[2:0] reset_key = 0
 );
 
-reg[7:0] keystate[10:0];
-
 assign shift = keystate[8][2:0];
+
+reg  [2:0] c;
+reg  [3:0] r;
+reg [11:0] shift_reg;
+reg  [7:0] keystate[10:0];
+wire[11:0] kdata = {ps2_dat,shift_reg[11:1]};
+wire [7:0] kcode = kdata[9:2];
 
 always @(addr,keystate) begin
 	odata =
@@ -41,15 +47,6 @@ always @(addr,keystate) begin
 		(keystate[6] & {8{addr[6]}})|
 		(keystate[7] & {8{addr[7]}});
 end
-
-reg[2:0] c;
-reg[3:0] r;
-reg unpress;
-reg[3:0] prev_clk;
-reg[11:0] shift_reg;
-
-wire[11:0] kdata = {ps2_dat,shift_reg[11:1]};
-wire[7:0] kcode = kdata[9:2];
 
 always @(*) begin
 	case (kcode)
@@ -137,18 +134,19 @@ always @(*) begin
 	endcase
 end
 
-reg malt   = 0;
-reg mctrl  = 0;
-reg mshift = 0;
-
 always @(posedge clk) begin
 	reg old_reset;
-	
+	reg malt   = 0;
+	reg mctrl  = 0;
+	reg mshift = 0;
+	reg unpress;
+	reg[3:0] prev_clk;
+
 	old_reset <= reset;
 	if(!old_reset && reset) begin
-		prev_clk <= 0;
-		shift_reg <= 12'hFFF;
-		unpress <= 0;
+		prev_clk    <= 0;
+		shift_reg   <= 'hFFF;
+		unpress     <= 0;
 		keystate[0] <= 0;
 		keystate[1] <= 0;
 		keystate[2] <= 0;
@@ -162,21 +160,22 @@ always @(posedge clk) begin
 		keystate[10]<= 0;
 	end else begin
 		prev_clk <= {ps2_clk,prev_clk[3:1]};
-		if (prev_clk==4'b1) begin
-			if (kdata[11]==1'b1 && ^kdata[10:2]==1'b1 && kdata[1:0]==2'b1) begin
-				shift_reg <= 12'hFFF;
+		if (prev_clk == 1) begin
+			if (kdata[11] & ^kdata[10:2] & (kdata[1:0] == 1)) begin
+				shift_reg <= 'hFFF;
 				if (kcode==8'h11) malt   <= ~unpress;
 				if (kcode==8'h14) mctrl  <= ~unpress;
 				if (kcode==8'h12) mshift <= ~unpress;
 				if (kcode==8'h59) mshift <= ~unpress;
 				if (kcode==8'h78) reset_key <= {(malt & ~unpress), (mshift & ~unpress), ((mctrl | mshift | malt) & ~unpress)};
-				if (kcode==8'hF0) unpress <= 1'b1; else
-				begin
+				if (kcode==8'hF0) unpress <= 1;
+				else begin
 					unpress <= 0;
-					if(r!=4'hF) keystate[r][c] <= ~unpress;
+					if(r != 'hF) keystate[r][c] <= ~unpress;
 				end
-			end else
+			end else begin
 				shift_reg <= kdata;
+			end
 		end
 	end
 end
