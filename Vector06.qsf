@@ -303,6 +303,12 @@ set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_RO
 set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
 
 set_global_assignment -name FITTER_AUTO_EFFORT_DESIRED_SLACK_MARGIN "2 ns"
+set_global_assignment -name VHDL_FILE T80/T8080se.vhd
+set_global_assignment -name VHDL_FILE T80/T80_Reg.vhd
+set_global_assignment -name VHDL_FILE T80/T80_Pack.vhd
+set_global_assignment -name VHDL_FILE T80/T80_MCode.vhd
+set_global_assignment -name VHDL_FILE T80/T80_ALU.vhd
+set_global_assignment -name VHDL_FILE T80/T80.vhd
 set_global_assignment -name VERILOG_FILE sram.v
 set_global_assignment -name VERILOG_FILE dpram.v
 set_global_assignment -name VERILOG_FILE bios.v

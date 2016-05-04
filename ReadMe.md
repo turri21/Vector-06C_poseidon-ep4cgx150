@@ -4,6 +4,7 @@ Precise K580VM80A (i8080) Verilog model by Vslav is used in this project. Some m
 
 ### Features:
 - Fully functional Vector 06C with presice timings
+- 3MHz(original) and 6MHz(turbo) speeds for CPU.
 - 320KB RAM (including 256KB of Quasi-disk)
 - Following file formats are supported: 
     - ROM: simple tape backup (loading from 0x100 address)
@@ -13,6 +14,9 @@ Precise K580VM80A (i8080) Verilog model by Vslav is used in this project. Some m
 - Specially developed i8253 module for better compatibility.
 - AY8910/YM2149 sound
 - Optional loadable BOOT ROM (up to 32KB)
+- Z80 CPU (experimental)
+
+Keep in mind Z80 CPU is not original CPU for Vector 06C, so not all applications can work correctly with this CPU. No additional hardware for ZX emulator supported. Use ZX Spectrum core if you want Spectrum.
 
 ### Installation:
 Copy the *.rbf file at the root of the SD card. You can rename the file to core.rbf if you want the MiST to load it automatically at startup.

@@ -47,6 +47,7 @@ module Vector06
    output        SDRAM_CKE
 );
 
+
 ///////////////   MIST ARM I/O   /////////////////
 assign LED = ~(ioctl_download | ioctl_erase | fdd_rd);
 
@@ -65,13 +66,13 @@ wire        ioctl_download;
 wire        ioctl_erase;
 wire  [4:0] ioctl_index;
 
-mist_io #(.STRLEN(97)) mist_io 
+mist_io #(.STRLEN(110)) mist_io 
 (
 	.clk_sys(clk_sys),
 
 	.conf_str
 	(
-	     "VECTOR06;ROM;F2,EDD;F3,FDD;O4,Turbo,Off,On;O7,Reset Palette,Yes,No;T5,Enter to App;T6,Cold Reboot"
+	     "VECTOR06;ROM;F2,EDD;F3,FDD;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot"
 	),
 	.SPI_SCK(SPI_SCK),
 	.CONF_DATA0(CONF_DATA0),
@@ -97,6 +98,7 @@ mist_io #(.STRLEN(97)) mist_io
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_data)
 );
+
 
 ////////////////////   CLOCKS   ///////////////////
 wire locked;
@@ -152,6 +154,7 @@ always @(negedge clk_sys) begin
 	end
 end
 
+
 ////////////////////   RESET   ////////////////////
 reg cold_reset = 0;
 reg reset = 1;
@@ -160,14 +163,17 @@ reg rom_enable = 1;
 //wait for boot rom
 integer reset_timer = 90000000;
 
-wire RESET = status[0] | status[5] | status[6] | buttons[1] | reset_key[0];
+wire RESET = status[0] | status[6] | buttons[1] | reset_key[0];
 reg  first_cycle = 1;
 
 always @(posedge clk_sys) begin
-	if(RESET || ioctl_download || reset_timer) begin
-		if(status[6]) reset_timer <= 100;
+	reg old_type;
+	old_type <= cpu_type;
+
+	if(RESET || ioctl_download || reset_timer || (old_type ^ cpu_type)) begin
+		if(status[6] | (old_type ^ cpu_type)) reset_timer <= 100;
 		reset <=1;
-		rom_enable <=(rom_enable & ~((ioctl_download & (ioctl_index == 1)) | reset_key[2] | status[5]));
+		rom_enable <=(rom_enable & ~((ioctl_download & (ioctl_index == 1)) | reset_key[2]));
 		if(first_cycle) rom_enable <=1;
 		first_cycle <=0;
 		if(reset_timer) reset_timer <= reset_timer - 1;
@@ -179,16 +185,17 @@ always @(posedge clk_sys) begin
 	end
 end
 
+
 ////////////////////   CPU   ////////////////////
-wire [15:0] addr;
+wire [15:0] addr     = cpu_type ? addr_z80     : addr_i80;
 reg   [7:0] cpu_i;
-wire  [7:0] cpu_o;
-wire        cpu_sync;
-wire        cpu_rd;
-wire        cpu_wr_n;
+wire  [7:0] cpu_o    = cpu_type ? cpu_o_z80    : cpu_o_i80;
+wire        cpu_sync = cpu_type ? cpu_sync_z80 : cpu_sync_i80;
+wire        cpu_rd   = cpu_type ? cpu_rd_z80   : cpu_rd_i80;
+wire        cpu_wr_n = cpu_type ? cpu_wr_n_z80 : cpu_wr_n_i80;
 reg         cpu_ready;
-wire        cpu_inte;
-reg         cpu_int;
+
+wire        cpu_type = status[5];
 
 reg   [7:0] status_word;
 always @(posedge clk_sys) begin
@@ -250,23 +257,57 @@ end
 wire io_rd = io_read  & cpu_rd;
 wire io_wr = io_write & ~cpu_wr_n;
 
-k580vm80a cpu
+wire [15:0] addr_i80;
+wire  [7:0] cpu_o_i80;
+wire        cpu_inte_i80;
+wire        cpu_sync_i80;
+wire        cpu_rd_i80;
+wire        cpu_wr_n_i80;
+reg         cpu_int_i80;
+
+k580vm80a cpu_i80
 (
    .pin_clk(clk_sys),
    .pin_f1(ce_f1),
    .pin_f2(ce_f2),
-   .pin_reset(reset),
-   .pin_a(addr),
-   .pin_dout(cpu_o),
+   .pin_reset(reset | cpu_type),
+   .pin_a(addr_i80),
+   .pin_dout(cpu_o_i80),
    .pin_din(cpu_i),
    .pin_hold(0),
    .pin_ready(cpu_ready),
-   .pin_int(cpu_int),
-   .pin_inte(cpu_inte),
-   .pin_sync(cpu_sync),
-   .pin_dbin(cpu_rd),
-   .pin_wr_n(cpu_wr_n)
+   .pin_int(cpu_int_i80),
+   .pin_inte(cpu_inte_i80),
+   .pin_sync(cpu_sync_i80),
+   .pin_dbin(cpu_rd_i80),
+   .pin_wr_n(cpu_wr_n_i80)
 );
+
+wire [15:0] addr_z80;
+wire  [7:0] cpu_o_z80;
+wire        cpu_inte_z80;
+wire        cpu_sync_z80;
+wire        cpu_rd_z80;
+wire        cpu_wr_n_z80;
+reg         cpu_int_z80;
+
+T8080se cpu_z80
+(
+	.CLK(clk_sys),
+	.CLKEN(ce_f1),
+	.RESET_n(~reset & cpu_type),
+	.A(addr_z80),
+	.DO(cpu_o_z80),
+	.DI(cpu_i),
+	.HOLD(0),
+	.READY(cpu_ready),
+	.INT(cpu_int_z80),
+	.INTE(cpu_inte_z80),
+	.SYNC(cpu_sync_z80),
+	.DBIN(cpu_rd_z80),
+	.WR_n(cpu_wr_n_z80)
+);
+
 
 ////////////////////   MEM   ////////////////////
 wire  [7:0] ram_o;
@@ -295,6 +336,7 @@ end
 wire [7:0] rom_o;
 bios rom(.address(addr[10:0]), .clock(clk_sys), .q(rom_o));
 
+
 /////////////////  E-DISK 256KB  ///////////////////
 reg  [2:0] ed_page;
 reg  [7:0] ed_reg;
@@ -321,6 +363,7 @@ always_comb begin
 		             default: ed_page = 0;
 	endcase
 end
+
 
 /////////////////////   FDD   /////////////////////
 wire  [7:0] fdd_o;
@@ -370,6 +413,7 @@ wd1793 fdd
 	.ready(!fdd_drive & fdd_ready)
 );
 
+
 ////////////////////   VIDEO   ////////////////////
 wire retrace;
 
@@ -390,13 +434,25 @@ video video
 
 always @(posedge clk_sys) begin
 	reg old_retrace;
+	int z80_delay;
 	old_retrace <= retrace;
 	
-	if(!cpu_inte) cpu_int <= 0;
-		else if(~old_retrace & retrace) cpu_int <= 1;
+	if(!cpu_inte_i80) cpu_int_i80 <= 0;
+		else if(~old_retrace & retrace) cpu_int_i80 <= 1;
+
+	if(!cpu_inte_z80) {z80_delay,cpu_int_z80} <= 0;
+	else begin
+		if(~old_retrace & retrace) z80_delay <= 1;
+		if(ce_12mp && z80_delay) z80_delay <= z80_delay + 1;
+		if(z80_delay == 700) begin
+			z80_delay   <= 0;
+			cpu_int_z80 <= 1;
+		end
+	end
 end
 
-////////////////////   KBD   ////////////////////
+
+/////////////////////   KBD   /////////////////////
 wire [7:0] kbd_o;
 wire [2:0] kbd_shift;
 wire [2:0] reset_key;
@@ -413,7 +469,8 @@ keyboard kbd
 	.reset_key(reset_key)
 );
 
-//////////////////  PPI1 (SYS)  ///////////////////
+
+/////////////////   PPI1 (SYS)   //////////////////
 wire [7:0] ppi1_o;
 wire [7:0] ppi1_a;
 wire [7:0] ppi1_b;
@@ -423,10 +480,10 @@ k580vv55 ppi1
 (
 	.clk_sys(clk_sys),
 	.reset(0),
-	.addr(~addr[1:0]), 
+	.addr(~addr[1:0]),
 	.we_n(~(io_wr & ppi1_sel)),
-	.idata(cpu_o), 
-	.odata(ppi1_o), 
+	.idata(cpu_o),
+	.odata(ppi1_o),
 	.opa(ppi1_a),
 	.ipb(~kbd_o),
 	.opb(ppi1_b),
@@ -434,8 +491,8 @@ k580vv55 ppi1
 	.opc(ppi1_c)
 );
 
-/////////////////   Joystick Zoo   /////////////////
 
+/////////////////   Joystick Zoo   /////////////////
 wire [7:0] joyPU   = joyA | joyB;
 wire [7:0] joyPU_o = {joyPU[3], joyPU[0], joyPU[2], joyPU[1], joyPU[4], joyPU[5], 2'b00};
 
@@ -465,6 +522,7 @@ always_comb begin
 		2'b11: joyP_o = 255;
 	endcase
 end
+
 
 ////////////////////   SOUND   ////////////////////
 wire       tapein = 0;
