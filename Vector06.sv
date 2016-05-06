@@ -148,7 +148,7 @@ always @(negedge clk_sys) begin
 	clk_pit <= div[5];
 
 	ps2_div <= ps2_div+1;
-	if(ps2_div == 3427) begin 
+	if(ps2_div == 3427) begin
 		ps2_div <=0;
 		clk_ps2 <= ~clk_ps2;
 	end
@@ -156,33 +156,45 @@ end
 
 
 ////////////////////   RESET   ////////////////////
-reg cold_reset = 0;
-reg reset = 1;
-reg rom_enable = 1;
-
-//wait for boot rom
-integer reset_timer = 90000000;
-
-wire RESET = status[0] | status[6] | buttons[1] | reset_key[0];
-reg  first_cycle = 1;
+reg cold_reset;
+reg reset;
+reg rom_enable;
 
 always @(posedge clk_sys) begin
-	reg old_type;
-	old_type <= cpu_type;
+	reg reset_flg  = 1;
+	int reset_hold = 0;
+	int init_reset = 90000000;
 
-	if(RESET || ioctl_download || reset_timer || (old_type ^ cpu_type)) begin
-		if(status[6] | (old_type ^ cpu_type)) reset_timer <= 100;
-		reset <=1;
-		rom_enable <=(rom_enable & ~((ioctl_download & (ioctl_index == 1)) | reset_key[2]));
-		if(first_cycle) rom_enable <=1;
-		first_cycle <=0;
-		if(reset_timer) reset_timer <= reset_timer - 1;
-		if(reset_timer == 20) cold_reset <= 1;
+	if(ioctl_erase | ioctl_download) begin
+		reset_flg <= 1;
+		reset     <= 1;
+		if(ioctl_download) rom_enable <= (ioctl_index != 1);
 	end else begin
-		cold_reset <=0;
-		first_cycle <=1;
-		reset <=0;
+		if(reset_flg) begin
+			reset_flg  <= 0;
+			cpu_type   <= status[5];
+			reset      <= 1;
+			reset_hold <= 1000;
+		end else if(reset_hold) reset_hold <= reset_hold - 1;
+		else {cold_reset,reset} <= 0;
+
+		// initial reset
+		if(init_reset) begin
+			init_reset <= init_reset - 1;
+			reset_flg  <= 1;
+			rom_enable <= 1;
+			cold_reset <= 1;
+		end
+
+		// reset by button or key
+		if(status[6] | buttons[1] | reset_key[0]) begin
+			rom_enable <= ~reset_key[2]; // disable boot rom if Alt is held.
+			reset_flg  <= 1;
+			cold_reset <= status[6];
+		end
 	end
+
+	if(cpu_type != status[5]) reset_flg <= 1;
 end
 
 
@@ -195,7 +207,7 @@ wire        cpu_rd   = cpu_type ? cpu_rd_z80   : cpu_rd_i80;
 wire        cpu_wr_n = cpu_type ? cpu_wr_n_z80 : cpu_wr_n_i80;
 reg         cpu_ready;
 
-wire        cpu_type = status[5];
+reg         cpu_type = 0;
 
 reg   [7:0] status_word;
 always @(posedge clk_sys) begin
