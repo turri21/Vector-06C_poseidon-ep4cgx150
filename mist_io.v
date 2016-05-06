@@ -28,7 +28,6 @@
 //
 //
 
-
 module mist_io #(parameter STRLEN=0)
 (
 
@@ -57,8 +56,7 @@ module mist_io #(parameter STRLEN=0)
 	output reg [7:0]  status,
 
 	// SD config
-	input             sd_conf_req,
-	output reg  [7:0] sd_conf,
+	input             sd_conf,
 	input             sd_sdhc,
 	output            sd_mounted,
 
@@ -70,10 +68,10 @@ module mist_io #(parameter STRLEN=0)
 	output reg        sd_ack_conf,
 
 	// SD byte level access
-	input       [9:0] sd_addr,            // 512b data + 16b cid + 16b csd + 1b conf (copy of sd_conf)
-	output      [7:0] sd_dout,
-	input       [7:0] sd_din,
-	input             sd_din_wr,
+	output reg  [8:0] sd_buff_addr,
+	output reg  [7:0] sd_buff_dout,
+	input       [7:0] sd_buff_din,
+	output reg        sd_buff_wr,
 
 	// ps2 keyboard emulation
 	input             ps2_clk,				  // 12-16khz provided by core
@@ -92,27 +90,7 @@ module mist_io #(parameter STRLEN=0)
 	output reg  [7:0] ioctl_dout
 );
 
-sdbuf sdbuf
-(
-	.clock(clk_sys),
-
-	.address_a(sd_addr),
-	.data_a(sd_din),
-	.wren_a(sd_din_wr),
-	.q_a(sd_dout),
-
-	.address_b(b_addr),
-	.data_b(b_din),
-	.wren_b(b_wr),
-	.q_b(b_dout)
-);
-
-reg [9:0] b_addr;
-reg [7:0] b_din;
-wire[7:0] b_dout;
-reg       b_wr;
 reg [7:0] b_data;
-
 reg [6:0] sbuf;
 reg [7:0] cmd;
 reg [2:0] bit_cnt;    // counts bits 0-7 0-7 ...
@@ -133,7 +111,7 @@ wire [7:0] spi_dout = { sbuf, SPI_DI};
 wire [7:0] core_type = 8'ha4;
 
 // command byte read by the io controller
-wire [7:0] sd_cmd = { 4'h5, sd_conf_req, sd_sdhc, sd_wr, sd_rd };
+wire [7:0] sd_cmd = { 4'h5, sd_conf, sd_sdhc, sd_wr, sd_rd };
 
 reg spi_do;
 assign SPI_DO = CONF_DATA0 ? 1'bZ : spi_do;
@@ -174,9 +152,9 @@ always@(negedge SPI_SCK) begin
 end
 
 reg b_wr2,b_wr3;
-always @(posedge clk_sys) begin
-	b_wr3 <= b_wr2;
-	b_wr  <= b_wr3;
+always @(negedge clk_sys) begin
+	b_wr3      <= b_wr2;
+	sd_buff_wr <= b_wr3;
 end
 
 // SPI receiver
@@ -194,9 +172,9 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 		sbuf <= spi_dout[6:0];
 		bit_cnt <= bit_cnt + 1'd1;
 		if(bit_cnt == 5) begin
-			if (byte_cnt == 0) b_addr <= 0;
-			if((byte_cnt != 0) & (b_addr[8:0] != 511)) b_addr <= b_addr + 1'b1;
-			if((byte_cnt == 1) & ((cmd == 8'h17) | (cmd == 8'h19))) b_addr[8:0] <= 0;
+			if (byte_cnt == 0) sd_buff_addr <= 0;
+			if((byte_cnt != 0) & (sd_buff_addr != 511)) sd_buff_addr <= sd_buff_addr + 1'b1;
+			if((byte_cnt == 1) & ((cmd == 8'h17) | (cmd == 8'h19))) sd_buff_addr <= 0;
 		end
 
 		// finished reading command byte
@@ -206,14 +184,14 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 				cmd <= spi_dout;
 
 				if(spi_dout == 8'h19) begin
-					sd_ack_conf <= 1;
-					b_addr <= 512;
+					sd_ack_conf  <= 1;
+					sd_buff_addr <= 0;
 				end
 				if((spi_dout == 8'h17) || (spi_dout == 8'h18)) begin
-					sd_ack <= 1;
-					b_addr <= 0;
+					sd_ack       <= 1;
+					sd_buff_addr <= 0;
 				end
-				if(spi_dout == 8'h18) b_data <= b_dout;
+				if(spi_dout == 8'h18) b_data <= sd_buff_din;
 
 				mount_strobe <= 0;
 
@@ -247,12 +225,11 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 					// send sector IO -> FPGA
 					// flag that download begins
 					8'h17: begin
-							if(b_addr == 544) sd_conf <= spi_dout;
-							b_din <= spi_dout;
+							sd_buff_dout <= spi_dout;
 							b_wr2 <= 1;
 						end
 
-					8'h18: b_data <= b_dout;
+					8'h18: b_data <= sd_buff_din;
 
 					// joystick analog
 					8'h1a: begin
@@ -278,11 +255,9 @@ always@(posedge SPI_SCK or posedge CONF_DATA0) begin
 		end
 	end
 end
-   
 
 
 ///////////////////////////////   PS2   ///////////////////////////////
-
 // 8 byte fifos to store ps2 bytes
 localparam PS2_FIFO_BITS = 3;
 
@@ -416,7 +391,7 @@ end
 ///////////////////////////////   DOWNLOADING   ///////////////////////////////
 
 reg  [7:0] data_w;
-reg [24:0] addr_w = 25'h400000;
+reg [24:0] addr_w;
 reg        rclk   = 0;
 
 localparam UIO_FILE_TX      = 8'h53;
@@ -453,11 +428,10 @@ always@(posedge SPI_SCK, posedge SPI_SS2) begin
 			// prepare 
 			if(SPI_DI) begin
 				case(ioctl_index) 
-							0: addr <= 25'h080000; // BOOT ROM
-							1: addr <= 25'h000100; // ROM file
-							2: addr <= 25'h010000; // EDD file
-							3: addr <= 25'h100000; // FDD file
-					default: addr <= 25'h000000; // C00 file
+							0: addr <= 'h080000; // BOOT ROM
+							1: addr <= 'h000100; // ROM file
+							2: addr <= 'h010000; // EDD file
+					default: addr <= 'h100000; // FDD file
 				endcase
 				ioctl_download <= 1; 
 			end else begin
@@ -478,12 +452,14 @@ always@(posedge SPI_SCK, posedge SPI_SS2) begin
 	end
 end
 
+reg  [24:0] erase_mask;
+wire [24:0] next_erase = (ioctl_addr + 1'd1) & erase_mask;
+
 always@(posedge clk_sys) begin
 	reg        rclkD, rclkD2;
-	reg        old_force;
+	reg        old_force = 0;
 	reg  [5:0] erase_clk_div;
 	reg [24:0] end_addr;
-	reg [24:0] erase_mask;
 	reg        erase_trigger = 0;
 
 	rclkD    <= rclk;
@@ -502,29 +478,28 @@ always@(posedge clk_sys) begin
 		erase_trigger <= (ioctl_index == 1);
 	end else begin
 
-		// download may trigger an erase afterwards
 		old_force <= ioctl_force_erase;
 
-		// start ioctl_erasing
+		// start erasing
 		if(erase_trigger) begin
 			erase_trigger <= 0;
-			erase_mask <= 25'hFFFF;
-			end_addr <= 25'hFF;
+			erase_mask    <= 'hFFFF;
+			end_addr      <= 'h0100;
 			erase_clk_div <= 1;
 			ioctl_erasing <= 1;
 		end else if((ioctl_force_erase & ~old_force)) begin
 			erase_trigger <= 0;
-			ioctl_addr <= 25'h1FFFFFF;
-			erase_mask <= 25'h1FFFFFF;
-			end_addr <= 25'h4FFFF;
+			ioctl_addr    <= 'h1FFFFFF;
+			erase_mask    <= 'h1FFFFFF;
+			end_addr      <= 'h0050000;
 			erase_clk_div <= 1;
 			ioctl_erasing <= 1;
 		end else if(ioctl_erasing) begin
 			erase_clk_div <= erase_clk_div + 1'd1;
 			if(!erase_clk_div) begin
-				if(ioctl_addr == end_addr) ioctl_erasing <= 0;
+				if(next_erase == end_addr) ioctl_erasing <= 0;
 				else begin
-					ioctl_addr <= (ioctl_addr + 1'd1) & erase_mask;
+					ioctl_addr <= next_erase;
 					ioctl_dout <= 0;
 					ioctl_wr   <= 1;
 				end
@@ -532,87 +507,5 @@ always@(posedge clk_sys) begin
 		end
 	end
 end
-
-endmodule
-
-module sdbuf
-(
-	address_a,
-	address_b,
-	clock,
-	data_a,
-	data_b,
-	wren_a,
-	wren_b,
-	q_a,
-	q_b);
-
-	input	[9:0]  address_a;
-	input	[9:0]  address_b;
-	input	  clock;
-	input	[7:0]  data_a;
-	input	[7:0]  data_b;
-	input	  wren_a;
-	input	  wren_b;
-	output	[7:0]  q_a;
-	output	[7:0]  q_b;
-
-	wire [7:0] sub_wire0;
-	wire [7:0] sub_wire1;
-	wire [7:0] q_a = sub_wire0[7:0];
-	wire [7:0] q_b = sub_wire1[7:0];
-
-	altsyncram	altsyncram_component (
-				.clock0 (clock),
-				.wren_a (wren_a),
-				.address_b (address_b),
-				.data_b (data_b),
-				.wren_b (wren_b),
-				.address_a (address_a),
-				.data_a (data_a),
-				.q_a (sub_wire0),
-				.q_b (sub_wire1),
-				.aclr0 (1'b0),
-				.aclr1 (1'b0),
-				.addressstall_a (1'b0),
-				.addressstall_b (1'b0),
-				.byteena_a (1'b1),
-				.byteena_b (1'b1),
-				.clock1 (1'b1),
-				.clocken0 (1'b1),
-				.clocken1 (1'b1),
-				.clocken2 (1'b1),
-				.clocken3 (1'b1),
-				.eccstatus (),
-				.rden_a (1'b1),
-				.rden_b (1'b1));
-	defparam
-		altsyncram_component.address_reg_b = "CLOCK0",
-		altsyncram_component.clock_enable_input_a = "BYPASS",
-		altsyncram_component.clock_enable_input_b = "BYPASS",
-		altsyncram_component.clock_enable_output_a = "BYPASS",
-		altsyncram_component.clock_enable_output_b = "BYPASS",
-		altsyncram_component.indata_reg_b = "CLOCK0",
-		altsyncram_component.intended_device_family = "Cyclone III",
-		altsyncram_component.lpm_type = "altsyncram",
-		altsyncram_component.numwords_a = 1024,
-		altsyncram_component.numwords_b = 1024,
-		altsyncram_component.operation_mode = "BIDIR_DUAL_PORT",
-		altsyncram_component.outdata_aclr_a = "NONE",
-		altsyncram_component.outdata_aclr_b = "NONE",
-		altsyncram_component.outdata_reg_a = "UNREGISTERED",
-		altsyncram_component.outdata_reg_b = "UNREGISTERED",
-		altsyncram_component.power_up_uninitialized = "FALSE",
-		altsyncram_component.read_during_write_mode_mixed_ports = "DONT_CARE",
-		altsyncram_component.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
-		altsyncram_component.read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ",
-		altsyncram_component.widthad_a = 10,
-		altsyncram_component.widthad_b = 10,
-		altsyncram_component.width_a = 8,
-		altsyncram_component.width_b = 8,
-		altsyncram_component.width_byteena_a = 1,
-		altsyncram_component.width_byteena_b = 1,
-		altsyncram_component.wrcontrol_wraddress_reg_b = "CLOCK0";
-
 
 endmodule
