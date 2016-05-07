@@ -85,7 +85,6 @@ mist_io #(.STRLEN(110)) mist_io
 
 	.joystick_0(joyA),
 	.joystick_1(joyB),
-	.ps2_clk(clk_ps2),
 	.ps2_kbd_clk(ps2_kbd_clk),
 	.ps2_kbd_data(ps2_kbd_data),
 
@@ -116,13 +115,11 @@ reg  ce_12mp;
 reg  ce_12mn;
 reg  ce_psg;       // 1.75MHz
 reg  clk_pit;      // 1.5MHz
-reg  clk_ps2;      // 14KHz
 
 always @(negedge clk_sys) begin
 	reg [6:0] div = 0;
 	reg [5:0] psg_div = 0;
 	reg       turbo;
-	int       ps2_div;
 
 	div <= div + 1'd1;
 
@@ -146,12 +143,6 @@ always @(negedge clk_sys) begin
 	ce_psg <= !psg_div;
 
 	clk_pit <= div[5];
-
-	ps2_div <= ps2_div+1;
-	if(ps2_div == 3427) begin
-		ps2_div <=0;
-		clk_ps2 <= ~clk_ps2;
-	end
 end
 
 
