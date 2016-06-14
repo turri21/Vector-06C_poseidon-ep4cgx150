@@ -47,6 +47,9 @@ module Vector06
    output        SDRAM_CKE
 );
 
+`include "build_id.v"
+localparam CONF_STR = {"VECTOR06;;F0,ROM,Load Tape Dump;F2,EDD,Load RAM Disk;F3,FDD,Load Floppy Disk;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot;V0,v2.20.",`BUILD_DATE};
+
 
 ///////////////   MIST ARM I/O   /////////////////
 assign LED = ~(ioctl_download | ioctl_erase | fdd_rd);
@@ -66,14 +69,11 @@ wire        ioctl_download;
 wire        ioctl_erase;
 wire  [4:0] ioctl_index;
 
-mist_io #(.STRLEN(110)) mist_io 
+mist_io #(.STRLEN($size(CONF_STR)>>3)) mist_io 
 (
 	.clk_sys(clk_sys),
 
-	.conf_str
-	(
-	     "VECTOR06;ROM;F2,EDD;F3,FDD;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot"
-	),
+	.conf_str(CONF_STR),
 	.SPI_SCK(SPI_SCK),
 	.CONF_DATA0(CONF_DATA0),
 	.SPI_DO(SPI_DO),
