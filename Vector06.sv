@@ -48,11 +48,11 @@ module Vector06
 );
 
 `include "build_id.v"
-localparam CONF_STR = {"VECTOR06;;F0,ROM,Load Tape Dump;F2,EDD,Load RAM Disk;F3,FDD,Load Floppy Disk;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot;V0,v2.20.",`BUILD_DATE};
+localparam CONF_STR = {"VECTOR06;;F0,ROM,Load Tape Dump;F2,EDD,Load RAM Disk;S3,FDD,Mount Floppy Disk;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot;V0,v2.20.",`BUILD_DATE};
 
 
 ///////////////   MIST ARM I/O   /////////////////
-assign LED = ~(ioctl_download | ioctl_erase | fdd_rd);
+assign LED = ~(ioctl_download | ioctl_erasing);
 
 wire        scandoubler_disable;
 wire        ps2_kbd_clk, ps2_kbd_data;
@@ -66,36 +66,41 @@ wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
 wire        ioctl_download;
-wire        ioctl_erase;
+wire        ioctl_erasing;
 wire  [4:0] ioctl_index;
+
+wire [31:0] sd_lba;
+wire        sd_rd;
+wire        sd_wr;
+wire        sd_ack;
+wire  [8:0] sd_buff_addr;
+wire  [7:0] sd_buff_dout;
+wire  [7:0] sd_buff_din;
+wire        sd_buff_wr;
+wire        img_mounted;
+wire [31:0] img_size;
 
 mist_io #(.STRLEN($size(CONF_STR)>>3)) mist_io 
 (
-	.clk_sys(clk_sys),
+	.*,
 
 	.conf_str(CONF_STR),
-	.SPI_SCK(SPI_SCK),
-	.CONF_DATA0(CONF_DATA0),
-	.SPI_DO(SPI_DO),
-	.SPI_DI(SPI_DI),
-
-	.status(status),
-	.buttons(buttons),
-	.scandoubler_disable(scandoubler_disable),
+	.sd_conf(0),
+	.sd_sdhc(1),
 
 	.joystick_0(joyA),
 	.joystick_1(joyB),
-	.ps2_kbd_clk(ps2_kbd_clk),
-	.ps2_kbd_data(ps2_kbd_data),
 
-	.SPI_SS2(SPI_SS2),
 	.ioctl_force_erase(cold_reset),
-	.ioctl_download(ioctl_download),
-	.ioctl_erasing(ioctl_erase),
-	.ioctl_index(ioctl_index),
-	.ioctl_wr(ioctl_wr),
-	.ioctl_addr(ioctl_addr),
-	.ioctl_dout(ioctl_data)
+	.ioctl_dout(ioctl_data),
+
+	// unused
+	.joystick_analog_0(),
+	.joystick_analog_1(),
+	.sd_ack_conf(),
+	.switches(),
+	.ps2_mouse_clk(),
+	.ps2_mouse_data()
 );
 
 
@@ -156,7 +161,7 @@ always @(posedge clk_sys) begin
 	int reset_hold = 0;
 	int init_reset = 90000000;
 
-	if(ioctl_erase | ioctl_download) begin
+	if(ioctl_erasing | ioctl_download) begin
 		reset_flg <= 1;
 		reset     <= 1;
 		if(ioctl_download) rom_enable <= (ioctl_index != 1);
@@ -178,7 +183,7 @@ always @(posedge clk_sys) begin
 		end
 
 		// reset by button or key
-		if(status[6] | buttons[1] | reset_key[0]) begin
+		if(status[6] | buttons[1] | reset_key[0] | (fdd_busy & rom_enable)) begin
 			rom_enable <= ~reset_key[2]; // disable boot rom if Alt is held.
 			reset_flg  <= 1;
 			cold_reset <= status[6];
@@ -320,10 +325,10 @@ sram sram
 	.init(!locked),
 	.clk_sdram(clk_sys),
 	.dout(ram_o),
-	.din( (ioctl_download | ioctl_erase) ? ioctl_data : cpu_o),
-	.addr((ioctl_download | ioctl_erase) ? ioctl_addr : fdd_read ? {1'b1, fdd_addr} : {read_rom, ed_page, addr}),
-	.we(  (ioctl_download | ioctl_erase) ? ioctl_wr   : ~cpu_wr_n & ~io_write),
-	.rd(  (ioctl_download | ioctl_erase) ? 1'b0       : cpu_rd),
+	.din( (ioctl_download | ioctl_erasing) ? ioctl_data : cpu_o),
+	.addr((ioctl_download | ioctl_erasing) ? ioctl_addr : {read_rom, ed_page, addr}),
+	.we(  (ioctl_download | ioctl_erasing) ? ioctl_wr   : ~cpu_wr_n & ~io_write),
+	.rd(  (ioctl_download | ioctl_erasing) ? 1'b0       : cpu_rd),
 	.ready()
 );
 
@@ -370,31 +375,23 @@ end
 
 /////////////////////   FDD   /////////////////////
 wire  [7:0] fdd_o;
-wire [19:0] fdd_addr;
 reg         fdd_drive;
 reg         fdd_ready;
-wire        fdd_rd;
-reg  [19:0] fdd_size;
 reg         fdd_side;
-wire        fdd_read = fdd_rd & io_read & fdd_sel;
+wire        fdd_busy;
 
 always @(posedge clk_sys) begin
-	reg old_download, old_wr;
+	reg old_mounted, old_wr;
 
-	old_download <= ioctl_download;
-	if(cold_reset) begin
-		fdd_ready <= 0;
-		fdd_size  <= 0;
-	end else if(~ioctl_download & old_download & (ioctl_index == 3)) begin 
-		fdd_ready <= 1;
-		fdd_size  <= ioctl_addr[19:0] + 1'd1;
-	end
+	old_mounted <= img_mounted;
+	if(cold_reset) fdd_ready <= 0;
+		else if(~old_mounted & img_mounted) fdd_ready <= 1;
 
 	old_wr <= io_wr;
 	if(~old_wr & io_wr & fdd_sel & addr[2]) {fdd_side, fdd_drive} <= {~cpu_o[2], cpu_o[0]};
 end
 
-wd1793 fdd
+wd1793 #(1) fdd
 (
 	.clk_sys(clk_sys),
 	.ce(ce_f1),
@@ -406,14 +403,29 @@ wd1793 fdd
 	.din(cpu_o),
 	.dout(fdd_o),
 
-	.buff_size(fdd_size),
-	.buff_addr(fdd_addr),
-	.buff_read(fdd_rd),
-	.buff_din(ram_o),
+	.img_mounted(img_mounted),
+	.img_size(img_size),
+	.sd_lba(sd_lba),
+	.sd_rd(sd_rd),
+	.sd_wr(sd_wr),
+	.sd_ack(sd_ack),
+	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_din(sd_buff_din),
+	.sd_buff_wr(sd_buff_wr),
+
+	.wp(0),
 
 	.size_code(3),
 	.side(fdd_side),
-	.ready(!fdd_drive & fdd_ready)
+	.ready(!fdd_drive & fdd_ready),
+	.prepare(fdd_busy),
+
+	.input_active(0),
+	.input_addr(0),
+	.input_data(0),
+	.input_wr(0),
+	.buff_din(0)
 );
 
 

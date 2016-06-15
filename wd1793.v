@@ -1,56 +1,70 @@
 `default_nettype none
 
 // ====================================================================
-//                        VECTOR-06C FPGA REPLICA
 //
-//             Copyright (C) 2007,2008 Viacheslav Slavinsky
+//  WD1793, WD1772, WD1773 replica (with write capability)
 //
-// This core is distributed under modified BSD license. 
-// For complete licensing information see LICENSE.TXT.
-// -------------------------------------------------------------------- 
+//  Copyright (C) 2007,2008 Viacheslav Slavinsky
+//  Copyright (C) 2016 Sorgelig
 //
-// An open implementation of Vector-06C home computer
+//  This program is free software; you can redistribute it and/or modify it
+//  under the terms of the GNU General Public License as published by the Free
+//  Software Foundation; either version 2 of the License, or (at your option)
+//  any later version.
 //
-// Author: Viacheslav Slavinsky, http://sensi.org/~svo
-// 
-// Design File: wd1793.v
+//  This program is distributed in the hope that it will be useful, but WITHOUT
+//  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+//  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+//  more details.
 //
-// This module approximates the inner workings of a WD1793 floppy disk
-// controller to some minimal extent. Track read/write operations
-// are not supported, other ops are mimicked only barely enough.
+//  You should have received a copy of the GNU General Public License along
+//  with this program; if not, write to the Free Software Foundation, Inc.,
+//  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
-// --------------------------------------------------------------------
-//
-// Modified version by Sorgelig to work with image in RAM
-//
-//
+//============================================================================
 
-module wd1793
+module wd1793 #(parameter RWMODE=0)
 (
-	input        clk_sys,    // sys clock
-	input        ce,         // ce at CPU clock rate
+	input        clk_sys,     // sys clock
+	input        ce,          // ce at CPU clock rate
 	input        reset,	     // async reset
 	input        io_en,
-	input        rd,         // i/o read
-	input        wr,         // i/o write
-	input  [1:0] addr,       // i/o port addr
-	input  [7:0] din,        // i/o data in
-	output [7:0] dout,       // i/o data out
-	output       drq,        // DMA request
+	input        rd,          // i/o read
+	input        wr,          // i/o write
+	input  [1:0] addr,        // i/o port addr
+	input  [7:0] din,         // i/o data in
+	output [7:0] dout,        // i/o data out
+	output       drq,         // DMA request
 	output       intrq,
 	output       busy,
 
-	// Sector buffer access signals
-	input [19:0] buff_size,	 // buffer RAM size (currently not used)
-	output[19:0] buff_addr,	 // buffer RAM address
-	output       buff_read,	 // buffer RAM read enable
-	output       buff_write, // buffer RAM write enable (not tested yet)
-	input  [7:0] buff_din,   // buffer RAM data input
-	output [7:0] buff_dout,  // buffer RAM data output
+	input        wp,          // write protect
 
-	input  [1:0] size_code,  // sector size code
+	input  [2:0] size_code,
 	input        side,
-	input        ready       // =1 - disk is present
+	input        ready,
+
+	// SD access (RWMODE == 1)
+	input        img_mounted, // signaling that new image has been mounted
+	input [31:0] img_size,    // size of image in bytes
+	output       prepare,
+	output[31:0] sd_lba,
+	output reg   sd_rd,
+	output reg   sd_wr,
+	input        sd_ack,
+	input  [8:0] sd_buff_addr,
+	input  [7:0] sd_buff_dout,
+	output [7:0] sd_buff_din,
+	input        sd_buff_wr,
+
+	// RAM access (RWMODE == 0)
+	input        input_active,
+	input [19:0] input_addr,
+	input  [7:0] input_data,
+	input        input_wr,
+	output[19:0] buff_addr,	  // buffer RAM address
+	output       buff_read,	  // buffer RAM read enable
+	input  [7:0] buff_din     // buffer RAM data input
 );
 
 // Possible track configs:
@@ -58,82 +72,122 @@ module wd1793
 // 1: 16 x 256  = 4.0KB
 // 2:  9 x 512  = 4.5KB
 // 3:  5 x 1024 = 5.0KB
+// 4: 10 x 512  = 5.0KB
 
-assign dout  = q;
-assign drq   = s_drq;
-assign busy  = s_busy;
-assign intrq = s_intrq;
+assign dout      = q;
+assign drq       = s_drq;
+assign busy      = s_busy;
+assign intrq     = s_intrq;
+assign sd_lba    = scan_active ? scan_addr[19:9] : buff_a[19:9] + sd_block;
+assign prepare   = scan_active;
+assign buff_addr = {buff_a[19:9], 9'd0} + byte_addr;
+assign buff_read = ((addr == A_DATA) && buff_rd);
 
-assign buff_addr  = buff_a;
-assign buff_read  = ((addr == A_DATA) && buff_rd);
-assign buff_write = ((addr == A_DATA) && buff_wr);
-assign buff_dout  = din;
+reg         var_size  = 0;
+wire  [2:0] disk_type = var_size ? 3'd5 : size_code;
 
-reg   [7:0] sectors_per_track;
-reg  [10:0] sector_size;
-reg   [9:0] byte_addr;
+reg   [7:0] sectors_per_track, edsk_spt;
+wire [10:0] sector_size = 11'd128 << wd_size_code;
+reg  [10:0] byte_addr;
 reg  [19:0] buff_a;
+reg   [1:0] wd_size_code;
+
+wire  [7:0] buff_dout;
+reg   [1:0] sd_block = 0;
+generate
+	if(RWMODE) begin
+		secbuf sbuf
+		(
+			.clock(clk_sys),
+
+			.address_a({sd_block, sd_buff_addr}),
+			.data_a(sd_buff_dout),
+			.wren_a(sd_buff_wr & sd_ack),
+			.q_a(sd_buff_din),
+
+			.address_b(scan_active ? {2'b00, scan_addr[8:0]} : byte_addr),
+			.data_b(din),
+			.wren_b(wre & buff_wr & (addr == A_DATA) & ~scan_active),
+			.q_b(buff_dout)
+		);
+		reg buff_wr;
+	end else begin
+		assign buff_dout = 0;
+		assign sd_buff_din = 0;
+	end
+endgenerate
 
 wire  [7:0] dts = {disk_track[6:0], side};
 always @* begin
-	case(size_code)
-		0: buff_a = {{1'b0, dts, 4'b0000} + {dts, 3'b000} + {dts, 1'b0} + wdstat_sector - 1'd1, byte_addr[6:0]};
-		1: buff_a = {{dts, 4'b0000}       + wdstat_sector - 1'd1, byte_addr[7:0]};
-		2: buff_a = {{dts, 3'b000}  + dts + wdstat_sector - 1'd1, byte_addr[8:0]};
-		3: buff_a = {{dts, 2'b00}   + dts + wdstat_sector - 1'd1, byte_addr[9:0]};
+	case(disk_type)
+				0: buff_a = {{1'b0, dts, 4'b0000} + {dts, 3'b000} + {dts, 1'b0} + wdreg_sector - 1'd1, 7'd0};
+				1: buff_a = {{dts, 4'b0000}       + wdreg_sector - 1'd1, 8'd0};
+				2: buff_a = {{dts, 3'b000}  + dts + wdreg_sector - 1'd1, 9'd0};
+				3: buff_a = {{dts, 2'b00}   + dts + wdreg_sector - 1'd1, 10'd0};
+				4: buff_a = {{dts, 3'b000}  + {dts, 1'b0} + wdreg_sector - 1'd1, 9'd0};
+		default: buff_a = edsk_offset;
 	endcase
-	case(size_code)
-		0: sectors_per_track = 26;
-		1: sectors_per_track = 16;
-		2: sectors_per_track = 9;
-		3: sectors_per_track = 5;
+	case(disk_type)
+				0: sectors_per_track = 26;
+				1: sectors_per_track = 16;
+				2: sectors_per_track = 9;
+				3: sectors_per_track = 5;
+				4: sectors_per_track = 10;
+		default: sectors_per_track = edsk_spt;
 	endcase
-	case(size_code)
-		0: sector_size = 128;
-		1: sector_size = 256;
-		2: sector_size = 512;
-		3: sector_size = 1024;
+	case(disk_type)
+				0: wd_size_code = 0;
+				1: wd_size_code = 1;
+				2: wd_size_code = 2;
+				3: wd_size_code = 3;
+				4: wd_size_code = 2;
+		default: wd_size_code = edsk_sizecode;
 	endcase
 end
 
-// Register addresses				
-parameter A_COMMAND         = 0;
-parameter A_STATUS          = 0;
-parameter A_TRACK           = 1;
-parameter A_SECTOR          = 2;
-parameter A_DATA            = 3;
+reg   [1:0] blk_size;
+always @* begin
+	case(wd_size_code)
+		0: blk_size = 0;
+		1: blk_size = 0;
+		2: blk_size = buff_a[8:0] ? 2'd1 : 2'd0;
+		3: blk_size = buff_a[8:0] ? 2'd2 : 2'd1;
+	endcase
+end
+
+
+// Register addresses
+localparam A_COMMAND         = 0;
+localparam A_STATUS          = 0;
+localparam A_TRACK           = 1;
+localparam A_SECTOR          = 2;
+localparam A_DATA            = 3;
 
 // States
-parameter STATE_READY       = 0;	/* Initial, idle, sector data read */
-parameter STATE_WAIT_READ   = 1;	/* wait until read operation completes -> STATE_READ_2/STATE_READY */
-parameter STATE_WAIT        = 2;	/* NOP operation wait -> STATE_READY */
-parameter STATE_ABORT       = 3;	/* Abort current command ($D0) -> STATE_READY */
-parameter STATE_READ_2      = 4;	/* Buffer-to-host: wait before asserting DRQ -> STATE_READ_3 */
-parameter STATE_READ_3      = 5;	/* Buffer-to-host: load data into reg, assert DRQ -> STATE_READY */
-parameter STATE_WAIT_WRITE  = 6;	/* wait until write operation completes -> STATE_READY */
-parameter STATE_READ_1      = 7;	/* Buffer-to-host: increment data pointer, decrement byte count -> STATE_READ_2*/
-parameter STATE_WRITE_1     = 8;	/* Host-to-buffer: wr = 1 -> STATE_WRITE_2 */
-parameter STATE_WRITE_2     = 9;	/* Host-to-buffer: wr = 0, next addr -> STATE_WRITESECT/STATE_WAIT_WRITE */
-parameter STATE_WRITESECT   = 10; /* Host-to-buffer: wait data from host -> STATE_WRITE_1 */
-parameter STATE_READSECT    = 11; /* Buffer-to-host */
-parameter STATE_WAIT_2      = 12;
-parameter STATE_ENDCOMMAND  = 14; /* All commands end here -> STATE_ENDCOMMAND2 */
-
-// State variables
-reg   [7:0] wdstat_track;
-reg   [7:0] wdstat_sector;
-reg   [7:0] wdstat_datareg;
-reg   [7:0] wdstat_command;			// command register
-reg			wdstat_pending;			// command loaded, pending execution
-reg 			wdstat_stepdirection;	// last step direction
-reg			wdstat_multisector;		// indicates multisector mode
-
-reg   [7:0] disk_track;					// "real" heads position
-reg  [10:0]	data_rdlength;				// this many bytes to transfer during read/write ops
-reg   [3:0] state;
+localparam STATE_READY       = 0;
+localparam STATE_WAIT_READ   = 1;
+localparam STATE_WAIT        = 2;
+localparam STATE_ABORT       = 3;
+localparam STATE_READ_2      = 4;
+localparam STATE_READ_3      = 5;
+localparam STATE_WAIT_WRITE  = 6;
+localparam STATE_READ_1      = 7;
+localparam STATE_WRITE_1     = 8;
+localparam STATE_WRITE_2     = 9;
+localparam STATE_WRITESECT   = 10;
+localparam STATE_READSECT    = 11;
+localparam STATE_WAIT_2      = 12;
+localparam STATE_ENDCOMMAND  = 14;
+localparam STATE_SEARCH      = 15;
+localparam STATE_SEARCH_1    = 16;
+localparam STATE_WAIT_READ_1 = 17;
+localparam STATE_WAIT_READ_2 = 18;
+localparam STATE_WAIT_WRITE_1= 19;
+localparam STATE_WAIT_WRITE_2= 20;
 
 // common status bits
-reg			s_readonly = 0, s_crcerr;
+wire        s_readonly = (wp | !RWMODE);
+reg			s_crcerr;
 reg			s_headloaded, s_seekerr, s_index;  // mode 1
 reg			s_lostdata, s_wrfault; 			     // mode 2,3
 
@@ -146,70 +200,148 @@ wire			s_drq  = s_drq_busy[1];
 wire			s_busy = s_drq_busy[0];
 reg         s_intrq;
 
-// Status register
-wire  [7:0] wdstat_status = cmd_mode == 0 ? 	
-	{~ready, s_readonly, s_headloaded, s_seekerr, s_crcerr, !disk_track, s_index, s_busy | wdstat_pending} :
-	{~ready, s_readonly, s_wrfault,    s_seekerr, s_crcerr, s_lostdata,  s_drq,   s_busy | wdstat_pending};
-	
-// Watchdog	
-reg	      watchdog_set;
-wire	      watchdog_bark;
-watchdog	dogbert(.clk_sys(clk_sys), .ce(ce), .cock(watchdog_set), .q(watchdog_bark));
+reg   [7:0] wdreg_track;
+reg   [7:0] wdreg_sector;
+reg   [7:0] wdreg_data;
+reg   [7:0] wdreg_command;
+wire  [7:0] wdreg_status = cmd_mode == 0 ?
+	{~ready, s_readonly, s_headloaded, s_seekerr | ~ready, s_crcerr, !disk_track, s_index, s_busy | pending}:
+	{~ready, s_readonly, s_wrfault,    s_seekerr | ~ready, s_crcerr, s_lostdata,  s_drq,   s_busy | pending};
 
 reg   [7:0] read_addr[6];
 reg   [7:0] q;
 always @* begin
 	case (addr)
-		A_TRACK:  q = wdstat_track;
-		A_SECTOR: q = wdstat_sector;
-		A_STATUS: q = wdstat_status;
-		A_DATA:   q = (state == STATE_READY) ? wdstat_datareg : buff_rd ? buff_din : read_addr[byte_addr[2:0]];
+		A_STATUS: q = wdreg_status;
+		A_TRACK:  q = wdreg_track;
+		A_SECTOR: q = wdreg_sector;
+		A_DATA:   q = (state == STATE_READY) ? wdreg_data : buff_rd ? (RWMODE ? buff_dout : buff_din) : read_addr[byte_addr[2:0]];
 	endcase
 end
 
 reg         buff_rd;
-reg         buff_wr;
+reg         pending;        // command loaded, pending execution
+reg         step_direction; // last step direction
+
+reg   [7:0] disk_track;		 // "real" heads position
+reg  [10:0]	data_length;	 // this many bytes to transfer during read/write ops
+reg   [4:0] state;
 
 // Reusable expressions
-wire        wStepDir   = wdstat_command[6] ? wdstat_command[5] : wdstat_stepdirection;
-wire  [7:0] wNextTrack = wStepDir ? disk_track - 8'd1 : disk_track + 8'd1;
-wire [10:0]	wRdLengthMinus1 = data_rdlength - 1'b1;
-wire [10:0]	wBuffAddrPlus1  = byte_addr + 1'b1;
+wire  [7:0] next_track  = (wdreg_command[6] ? wdreg_command[5] : step_direction) ? disk_track - 1'd1 : disk_track + 1'd1;
+wire [10:0]	next_length = data_length - 1'b1;
+
+// Watchdog
+reg        watchdog_set;
+wire       watchdog_bark = (wd_timer == 0);
+reg [15:0] wd_timer;
+always @(posedge clk_sys) begin
+	if(ce) begin
+		if(watchdog_set) wd_timer <= 2048;
+			else if(wd_timer != 0) wd_timer <= wd_timer - 1'b1;
+	end
+end
 
 wire        rde = rd & io_en;
 wire        wre = wr & io_en;
-always @(posedge clk_sys or posedge reset) begin
+always @(posedge clk_sys) begin
 	reg old_wr, old_rd;
 
 	reg [2:0] cur_addr;
 	reg       read_data;
 	reg       write_data;
-	reg       read_type;
+	reg       rw_type;
 	integer   wait_time;
 	reg [3:0] read_timer;
 	reg [9:0] seektimer;
+	reg [7:0] ra_sector;
+	reg       multisector;
+	reg       cmp_side, wdreg_side;
+	reg       write;
+	reg [5:0] ack;
+	reg       sd_busy;
+	reg       old_mounted;
+	reg [3:0] scan_state;
+	reg [1:0] scan_cnt;
+	reg [1:0] blk_max;
 
-	if(reset) begin
+	if(RWMODE) begin
+		old_mounted <= img_mounted;
+		if(old_mounted & ~img_mounted) begin
+			scan_active<= 1;
+			scan_addr  <= 0;
+			scan_state <= 0;
+			scan_wr    <= 0;
+			sd_block   <= 0;
+		end
+	end else begin
+		scan_active <= input_active;
+		scan_addr   <= input_addr;
+		scan_wr     <= input_wr;
+	end
+
+	if(reset & ~scan_active) begin
 		read_data <= 0;
 		write_data <= 0;
-		wdstat_multisector <= 0;
-		wdstat_stepdirection <= 0;
+		multisector <= 0;
+		step_direction <= 0;
 		disk_track <= 0;
-		wdstat_track <= 0;
-		wdstat_sector <= 0;
-		data_rdlength <= 0;
+		wdreg_track <= 0;
+		wdreg_sector <= 0;
+		wdreg_data <= 0;
+		data_length <= 0;
 		byte_addr <=0;
-		{buff_rd,buff_wr} <= 0;
-		wdstat_multisector <= 0;
+		buff_rd <= 0;
+		if(RWMODE) buff_wr <= 0;
 		state <= STATE_READY;
 		cmd_mode <= 0;
 		{s_headloaded, s_seekerr, s_crcerr, s_intrq, s_index} <= 0;
 		{s_wrfault, s_lostdata} <= 0;
 		s_drq_busy <= 0;
-		wdstat_pending <= 0;
+		pending <= 0;
 		watchdog_set <= 0;
-		seektimer <= 10'h3FF;
+		seektimer <= 'h3FF;
+		{ack, sd_wr, sd_rd, sd_busy} <= 0;
+		ra_sector <= 1;
+		cmp_side <= 0;
 	end else if(ce) begin
+
+		ack <= {ack[4:0], sd_ack};
+		if(ack[5:4] == 'b01) {sd_rd,sd_wr} <= 0;
+		if(ack[5:4] == 'b10) sd_busy <= 0;
+
+		if(RWMODE & scan_active) begin
+			if(scan_addr >= img_size) scan_active <= 0;
+			else begin
+				case(scan_state)
+					0:	begin
+							sd_rd   <= 1;
+							sd_busy <= 1;
+							scan_wr <= 0;
+							scan_state <= 1;
+						end
+					1: if(!sd_busy) begin
+							scan_wr    <= 1;
+							scan_cnt   <= 1;
+							scan_state <= 2;
+						end
+					2: begin
+							scan_cnt <= scan_cnt + 1'd1;
+							if(!scan_cnt) begin
+								scan_wr <= ~scan_wr;
+								if(scan_wr) begin
+									scan_addr <= scan_addr + 1'b1;
+									if(&scan_addr[8:0]) begin
+										scan_active <= var_size;
+										scan_state  <= 0;
+									end
+								end
+							end
+						end
+				endcase
+			end
+		end
+
 		old_wr <=wre;
 		old_rd <=rde;
 
@@ -238,16 +370,16 @@ always @(posedge clk_sys or posedge reset) begin
 								else {s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
 
 						end else begin
-							if(!wdstat_pending) begin
-								wdstat_command <= din;
-								wdstat_pending <= 1;
+							if(!pending) begin
+								wdreg_command <= din;
+								pending <= 1;
 							end
 						end
 					end
 
-				A_TRACK:  if (!s_busy) wdstat_track <= din;
-				A_SECTOR: if (!s_busy) wdstat_sector <= din;
-				A_DATA:   wdstat_datareg <= din;
+				A_TRACK:  if (!s_busy) wdreg_track <= din;
+				A_SECTOR: if (!s_busy) {ra_sector, wdreg_sector} <= {din,din};
+				A_DATA:   wdreg_data <= din;
 			endcase
 		end
 
@@ -257,23 +389,23 @@ always @(posedge clk_sys or posedge reset) begin
 		//////////////////////////////////////////////////////////////////
 
 		/* Data transfer: buffer to host. Read stage 1: increment address */
-		case (state) 
+		case (state)
 
 		/* Idle state or buffer to host transfer */
 		STATE_READY:
 			begin
 				// handle command
-				if (wdstat_pending) begin
-					wdstat_pending <= 0;
-					cmd_mode <= wdstat_command[7];		// keep cmd_mode for wdstat_status
-					
-					case (wdstat_command[7:4]) 
+				if (pending) begin
+					pending <= 0;
+					cmd_mode <= wdreg_command[7];
+
+					case (wdreg_command[7:4])
 					4'h0: 	// RESTORE
 						begin
 							// head load as specified, index, track0
-							s_headloaded <= wdstat_command[3];
+							s_headloaded <= wdreg_command[3];
 							s_index <= 1;
-							wdstat_track <= 0;
+							wdreg_track <= 0;
 							disk_track <= 0;
 
 							// some programs like it when FDC gets busy for a while
@@ -283,11 +415,11 @@ always @(posedge clk_sys or posedge reset) begin
 					4'h1:	// SEEK
 						begin
 							// set real track to datareg
-							disk_track <= wdstat_datareg; 
-							s_headloaded <= wdstat_command[3];
+							disk_track <= wdreg_data;
+							s_headloaded <= wdreg_command[3];
 							s_index <= 1;
-							
-							// get busy 
+
+							// get busy
 							s_drq_busy <= 2'b01;
 							state <= STATE_WAIT;
 						end
@@ -299,74 +431,84 @@ always @(posedge clk_sys or posedge reset) begin
 					4'h7:	// STEP-OUT & UPDATE
 						begin
 							// if direction is specified, store it for the next time
-							if (wdstat_command[6] == 1) wdstat_stepdirection <= wdstat_command[5]; // 0: forward/in
-							
-							// perform step 
-							disk_track <= wNextTrack;
-									
+							if (wdreg_command[6] == 1) step_direction <= wdreg_command[5]; // 0: forward/in
+
+							// perform step
+							disk_track <= next_track;
+
 							// update TRACK register too if asked to
-							if (wdstat_command[4]) wdstat_track <= wNextTrack;
-								
-							s_headloaded <= wdstat_command[3];
+							if (wdreg_command[4]) wdreg_track <= next_track;
+
+							s_headloaded <= wdreg_command[3];
 							s_index <= 1;
 
 							// some programs like it when FDC gets busy for a while
 							s_drq_busy <= 2'b01;
 							state <= STATE_WAIT;
 						end
+					4'hA, 4'hB, // WRITE SECTORS
 					4'h8, 4'h9: // READ SECTORS
 						// seek data
+						// 5: 0: read, 1: write
 						// 4: m: 0: one sector, 1: until the track ends
 						// 3: S: SIDE
 						// 2: E: some 15ms delay
 						// 1: C: check side matching?
 						// 0: 0
 						begin
-							// side is specified in the secondary control register ($1C)
+							wdreg_side <= wdreg_command[3];
+							cmp_side   <= wdreg_command[1];
+
 							s_drq_busy <= 2'b01;
 							{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
-							
-							wdstat_multisector <= wdstat_command[4];
-							data_rdlength <= sector_size;
-							state <= STATE_WAIT_READ;
-							read_type <=1;
-						end
-					4'hA, 4'hB: // WRITE SECTORS
-						begin
-							s_drq_busy <= 2'b11;
-							{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
-							wdstat_multisector <= wdstat_command[4];
-							
-							data_rdlength <= sector_size;
-							byte_addr <= 0;
-							write_data <= 0;
-							buff_wr <= 1;
 
-							state <= STATE_WRITESECT;
-						end								
+							{write,buff_rd} <= wdreg_command[5] ? 2'b10 : 2'b01;
+							if(RWMODE) buff_wr <= wdreg_command[5];
+
+							multisector <= wdreg_command[4];
+							rw_type     <= 1;
+							write_data  <= 0;
+							read_data   <= 0;
+							edsk_start  <= 0;
+							state       <= STATE_SEARCH;
+
+							if(s_readonly & wdreg_command[5]) begin
+								s_wrfault <= 1;
+								state <= STATE_WAIT;
+							end
+						end
 					4'hC:	// READ ADDRESS
 						begin
 							// track, side, sector, sector size code, 2-byte checksum (crc?)
 							s_drq_busy <= 2'b01;
 							{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
 
-							wdstat_multisector <= 0;
-							state <= STATE_WAIT_READ;
-							data_rdlength <= 6;
-							read_type <= 0;
+							{write,buff_rd} <= 0;
+							if(RWMODE) buff_wr <=0;
+
+							multisector <= 0;
+							rw_type     <= 0;
+							read_data   <= 0;
+							cmp_side    <= 0;
+							edsk_start  <= edsk_next;
+							data_length <= 6;
 
 							read_addr[0] <= disk_track;
 							read_addr[1] <= {7'b0, side};
-							read_addr[2] <= wdstat_sector;
-							read_addr[3] <= size_code;
+							read_addr[2] <= ra_sector;
+							read_addr[3] <= wd_size_code;
 							read_addr[4] <= 0;
 							read_addr[5] <= 0;
+
+							if(ra_sector >= sectors_per_track) ra_sector <= 1;
+								else ra_sector <= ra_sector + 1'd1;
+							state <= STATE_SEARCH;
 						end
 					4'hE,	// READ TRACK
 					4'hF:	// WRITE TRACK
 						begin
-							{s_wrfault,s_seekerr,s_crcerr,s_lostdata} <= 0;
-							if(wdstat_command[4]) s_wrfault <= 1; // read-only
+							{s_wrfault,s_crcerr,s_lostdata} <= 0;
+							s_seekerr <= 1;
 							s_drq_busy <= 2'b01;
 							state <= STATE_WAIT;
 						end
@@ -375,133 +517,195 @@ always @(posedge clk_sys or posedge reset) begin
 				end
 			end
 
-		STATE_WAIT_READ:
+		STATE_SEARCH:
 			begin
-				if (!ready) begin
-					// FAIL
+				if(!ready) begin
 					s_seekerr <= 1;
-					s_crcerr <= 1;
 					state <= STATE_ENDCOMMAND;
 				end else begin
 					seektimer <= seektimer - 1'b1;
 					if(!seektimer) begin
-						if(wdstat_multisector && (wdstat_sector > sectors_per_track)) begin
-							if(wdstat_multisector) s_seekerr <= 1;
-							wdstat_multisector <= 0;
-							state <= STATE_ENDCOMMAND;
+						byte_addr <= 0;
+						if(disk_type >= 5) begin
+							edsk_addr <= edsk_start;
+							spt_addr  <= (side ? spt_size>>1 : 8'd0) + disk_track;
+							state     <= STATE_SEARCH_1;
 						end else begin
-							buff_rd <= read_type;
-							byte_addr <= 0;
-							state <= STATE_READ_2;
+							if(!wdreg_sector || (wdreg_sector > sectors_per_track)) begin
+								s_seekerr <= 1;
+								state <= STATE_ENDCOMMAND;
+							end else begin
+								state <= rw_type ? STATE_WAIT_READ : STATE_READSECT;
+							end
 						end
 					end
 				end
 			end
-		STATE_READ_1:
+		STATE_SEARCH_1:
 			begin
-				// increment data pointer, decrement byte count
-				byte_addr <= wBuffAddrPlus1[9:0];
-				data_rdlength <= wRdLengthMinus1[9:0];
-				state <= STATE_READ_2;
+				if(rw_type & (edsk_track == disk_track) &
+					          (edsk_side == side) &
+								 (~cmp_side | (edsk_sidef == wdreg_side)) &
+					          (edsk_sector == wdreg_sector)) begin
+					state <= STATE_WAIT_READ;
+				end
+				else
+				if(~rw_type & (edsk_track == disk_track) &
+					           (edsk_side == side)) begin
+					buff_rd      <= 0;
+					read_addr[0] <= edsk_trackf;
+					read_addr[1] <= edsk_sidef;
+					read_addr[2] <= edsk_sector;
+					read_addr[3] <= edsk_sizecode;
+					read_addr[4] <= 0;
+					read_addr[5] <= 0;
+					state        <= STATE_READSECT;
+				end
+				else
+				if(edsk_next == edsk_start) begin
+					s_seekerr <= 1;
+					state <= STATE_ENDCOMMAND;
+				end
+				else
+				begin
+					edsk_addr <= edsk_next;
+				end
 			end
-		STATE_READ_2:
+		// read before write in case if sector not aligned
+		STATE_WAIT_READ:
+			begin
+				data_length <= sector_size;
+				byte_addr   <= buff_a[8:0];
+				blk_max     <= blk_size;
+				sd_block    <= 0;
+				state       <= RWMODE ? STATE_WAIT_READ_1 : write ? STATE_WRITESECT : STATE_READSECT;
+			end
+		STATE_WAIT_READ_1:
+			begin
+				sd_busy <= 1;
+				sd_rd   <= 1;
+				state   <= STATE_WAIT_READ_2;
+			end
+		STATE_WAIT_READ_2:
+			begin
+				if(!sd_busy) begin
+					sd_block <= sd_block + 1'd1;
+					state <= write ? STATE_WRITESECT : STATE_READSECT;
+					if(sd_block < blk_max) state <= STATE_WAIT_READ_1;
+				end
+			end
+
+		STATE_READSECT:
 			begin
 				watchdog_set <= 1;
 				read_timer <= 4'b1111;
-				state <= STATE_READ_3;
 				s_drq_busy <= 2'b01;
+				state <= STATE_READ_1;
 			end
-		STATE_READ_3:
+		STATE_READ_1:
 			begin
-				if (read_timer != 0) 
+				if(read_timer != 0)
 					read_timer <= read_timer - 1'b1;
 				else begin
 					read_data <= 0;
 					watchdog_set <= 0;
 					s_lostdata <= 0;
 					s_drq_busy <= 2'b11;
-					state <= STATE_READSECT;
+					state <= STATE_READ_2;
 				end
 			end
-		STATE_READSECT:
+		STATE_READ_2:
 			begin
-				// lose data if not requested in time
-				//if (s_drq && watchdog_bark) begin
-				//	s_lostdata <= 1'b1;
-				//	s_drq_busy <= 2'b01;
-				//	state <= data_rdlength != 0 ? STATE_READ_1 : STATE_ABORT;
-				//end
-
-				if (watchdog_bark || (read_data && s_drq)) begin
+				if(watchdog_bark || (read_data && s_drq)) begin
 					// reset drq until next byte is read, nothing is lost
 					s_drq_busy <= 2'b01;
 					s_lostdata <= watchdog_bark;
-					
-					if (wRdLengthMinus1 == 0) begin
+
+					if(next_length == 0) begin
 						// either read the next sector, or stop if this is track end
-						if (wdstat_multisector) begin
-							wdstat_sector <= wdstat_sector + 1'b1;
-							data_rdlength <= sector_size;
-							state <= STATE_WAIT_READ;
+						if(multisector) begin
+							wdreg_sector <= wdreg_sector + 1'b1;
+							state <= STATE_SEARCH;
 						end else begin
-							if(wdstat_multisector) s_seekerr <= 1;
-							wdstat_multisector <= 0;
 							state <= STATE_ENDCOMMAND;
 						end
 					end else begin
-						// everything is okay, fetch next byte
-						state <= STATE_READ_1;
+						byte_addr <= byte_addr + 1'd1;
+						data_length <= next_length;
+						state <= STATE_READSECT;
 					end
 				end
 			end
 
 		STATE_WAIT_WRITE:
 			begin
-				if (!ready) begin
+				if(!ready) begin
 					s_wrfault <= 1;
 					state <= STATE_ENDCOMMAND;
 				end else begin
-					if (wdstat_multisector && wdstat_sector < sectors_per_track) begin
-						wdstat_sector <= wdstat_sector + 1'b1;
-						s_drq_busy <= 2'b11;
-						data_rdlength <= sector_size;
-						byte_addr <= 0;
-						state <= STATE_WRITESECT;
-					end else begin
-						wdstat_multisector <= 0;
-						state <= STATE_ENDCOMMAND;
+					sd_block <= 0;
+					state <= STATE_WAIT_WRITE_1;
+				end
+			end
+		STATE_WAIT_WRITE_1:
+			begin
+				sd_busy <= 1;
+				sd_wr   <= 1;
+				state   <= STATE_WAIT_WRITE_2;
+			end
+		STATE_WAIT_WRITE_2:
+			begin
+				if(!sd_busy) begin
+					sd_block <= sd_block + 1'd1;
+					if(sd_block < blk_max) state <= STATE_WAIT_WRITE_1;
+					else begin
+						if(multisector) begin
+							wdreg_sector <= wdreg_sector + 1'b1;
+							state <= STATE_SEARCH;
+						end else begin
+							state <= STATE_ENDCOMMAND;
+						end
 					end
 				end
 			end
 		STATE_WRITESECT:
 			begin
-				if (write_data) begin
-					s_drq_busy <= 2'b01;			// busy, clear drq
-					s_lostdata <= 0;
-					state <= STATE_WRITE_2;
+				watchdog_set <= 1;
+				read_timer <= 4'b1111;
+				state <= STATE_WRITE_1;
+			end
+		STATE_WRITE_1:
+			begin
+				if(read_timer != 0)
+					read_timer <= read_timer - 1'b1;
+				else begin
 					write_data <= 0;
+					watchdog_set <= 0;
+					s_lostdata <= 0;
+					s_drq_busy <= 2'b11;
+					state <= STATE_WRITE_2;
 				end
 			end
 		STATE_WRITE_2:
 			begin
-				// increment data pointer, decrement byte count
-				byte_addr <= wBuffAddrPlus1[9:0];
-				data_rdlength <= wRdLengthMinus1;
-								
-				if (wRdLengthMinus1 == 0) begin
-					// Flush data --
-					state <= STATE_WAIT_WRITE;
-				end else begin
-					s_drq_busy <= 2'b11;		// request next byte
-					state <= STATE_WRITESECT;
-				end				
+				if(watchdog_bark || (write_data && s_drq)) begin
+					s_drq_busy <= 2'b01;
+					s_lostdata <= watchdog_bark;
+
+					if(!next_length) state <= STATE_WAIT_WRITE;
+					else begin
+						byte_addr <= byte_addr + 1'd1;
+						data_length <= next_length;
+						state <= STATE_WRITESECT;
+					end
+				end
 			end
 
 		// Abort current operation ($D0)
 		STATE_ABORT:
 			begin
-				data_rdlength <= 0;
-				wdstat_pending <= 0;
+				data_length <= 0;
+				pending <= 0;
 				state <= STATE_ENDCOMMAND;
 			end
 
@@ -519,35 +723,127 @@ always @(posedge clk_sys or posedge reset) begin
 		// End any command.
 		STATE_ENDCOMMAND:
 			begin
-				{buff_rd,buff_wr} <= 0;
+				buff_rd <= 0;
+				if(RWMODE) buff_wr <=0;
 				state <= STATE_READY;
 				s_drq_busy <= 2'b00;
-				seektimer <= 10'h3FF;
+				seektimer <= 'h3FF;
 				s_intrq <= 1;
 			end
 		endcase
 	end
 end
-endmodule
 
+reg        scan_active = 0;
+reg [19:0] scan_addr;
+wire [7:0] scan_data = RWMODE ? buff_dout : input_data;
+reg        scan_wr;
 
-// start ticking when cock goes down
-module watchdog
-(
-	input  clk_sys,
-	input  ce,
-	input  cock,
-	output q
-);
+reg  [1:0] edsk_sizecode;      // sector size: 0=128K, 1=256K, 2=512K, 3=1024K
+reg        edsk_side;          // Side number (0 or 1)
+reg  [6:0] edsk_track;         // Track number
+reg  [7:0] edsk_sector;        // Sector number 0..15
+reg [19:0] edsk_offset;
+reg  [7:0] edsk_trackf, edsk_sidef;
 
-parameter TIME = 16'd2048; // 2048 seems to work better than expected 100 (32us).. why?
-assign q = (timer == 0);
+wire[10:0] edsk_next = ((edsk_addr + 1'd1) >= edsk_size) ? 11'd0 : edsk_addr + 1'd1;
+reg [10:0] edsk_size;
+reg [10:0] edsk_addr, edsk_start;
+reg [53:0] edsk[1992];
 
-reg [15:0] timer;
+reg  [7:0] spt_size;
+reg  [7:0] spt_addr;
+reg  [7:0] spt[166];
+
 always @(posedge clk_sys) begin
-	if(ce) begin
-		if(cock) timer <= TIME;
-			else if(timer != 0) timer <= timer - 1'b1;
+	{edsk_track,edsk_side,edsk_trackf,edsk_sidef,edsk_sector,edsk_sizecode,edsk_offset} <= edsk[edsk_addr];
+	edsk_spt <= spt[spt_addr];
+end
+
+wire[127:0] edsk_sig = "EXTENDED CPC DSK";
+wire[127:0] sig_pos  = edsk_sig >> (8'd120-(scan_addr[7:0]<<3));
+
+always @(posedge clk_sys) begin
+	reg old_active, old_wr;
+	reg [13:0] hdr_pos, bcnt;
+	reg  [7:0] idStatus;
+   reg  [6:0] track;
+   reg        side;
+   reg  [7:0] sector;
+   reg  [1:0] sizecode;
+   reg  [7:0] crc1;
+   reg  [7:0] crc2;
+	reg  [7:0] sectors;
+	reg  [7:0] tsize[166];
+	reg [15:0] track_size, track_pos;
+	reg [19:0] offset, offset1;
+	reg  [7:0] size_lo;
+	reg  [7:0] pos;
+	reg [10:0] secpos;
+	reg  [7:0] trackf, sidef;
+
+	old_active <= scan_active;
+	if(scan_active & ~old_active) begin
+		edsk_size <=0;
+		spt_size  <=0;
+		track_pos <=0;
+		var_size  <=1;
+	end
+
+	old_wr <= scan_wr;
+	if(scan_wr & ~old_wr & scan_active) begin
+		if((scan_addr[19:0] < 16) & (sig_pos[7:0] != scan_data)) var_size <= 0;
+		if(var_size) begin
+			if( scan_addr == 48) spt_size <= scan_data; else
+			if((scan_addr == 49) & (scan_data == 2)) spt_size <= spt_size << 1; else
+			if( scan_addr == 52) begin
+				track_size <= {scan_data, 8'd0};
+				track_pos  <= 0;
+				pos <= 1;
+			end else
+			if((scan_addr  > 52) & (scan_addr < 218)) begin
+				tsize[scan_addr - 52] <= scan_data;
+				spt[scan_addr - 52] <= 0;
+			end else
+			if((scan_addr >= 256) && track_size) begin
+				track_pos <= track_pos + 1'd1;
+				case(track_pos)
+					00: offset  <= scan_addr + 9'd256;
+					16: track   <= scan_data[6:0];
+					17: side    <= scan_data[0];
+					21: sectors <= scan_data;
+					22: spt[(side ? (spt_size >> 1) : 8'd0) + track] <= sectors;
+					default:
+						if((track_pos >= 24) && sectors) begin
+							case(track_pos[2:0])
+								0: begin
+										trackf  <= scan_data;
+										secpos  <= edsk_size;
+										offset1 <= offset;
+									end
+								1: sidef   <= scan_data;
+								2: sector  <= scan_data;
+								3: sizecode<= scan_data[1:0];
+								6: size_lo <= scan_data;
+								7: begin
+										if({scan_data, size_lo}) begin
+											edsk[secpos] <= {track,side,trackf,sidef,sector,sizecode,offset1};
+											edsk_size <= edsk_size + 1'd1;
+											offset <= offset + {scan_data, size_lo};
+										end
+										sectors <= sectors - 1'd1;
+									end
+								default:;
+							endcase
+						end
+				endcase
+				if(track_pos >= (track_size - 1'd1)) begin
+					track_size <= {tsize[pos], 8'd0};
+					track_pos  <= 0;
+					pos <= pos + 1'd1;
+				end
+			end
+		end
 	end
 end
 
