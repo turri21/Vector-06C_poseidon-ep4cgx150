@@ -96,7 +96,7 @@ wire  [7:0] buff_dout;
 reg   [1:0] sd_block = 0;
 generate
 	if(RWMODE) begin
-		secbuf sbuf
+		wd1793_dpram sbuf
 		(
 			.clock(clk_sys),
 
@@ -112,7 +112,7 @@ generate
 		);
 		reg buff_wr;
 	end else begin
-		assign buff_dout = 0;
+		assign buff_dout   = 0;
 		assign sd_buff_din = 0;
 	end
 endgenerate
@@ -237,8 +237,19 @@ wire       watchdog_bark = (wd_timer == 0);
 reg [15:0] wd_timer;
 always @(posedge clk_sys) begin
 	if(ce) begin
-		if(watchdog_set) wd_timer <= 2048;
+		if(watchdog_set) wd_timer <= 4096;
 			else if(wd_timer != 0) wd_timer <= wd_timer - 1'b1;
+	end
+end
+
+always @(posedge clk_sys) begin
+	integer cnt;
+	if(ce) begin
+		if(ready) begin
+			if(cnt) cnt <= cnt - 1;
+				else cnt <= 35000;
+		end else cnt <= 0;
+		s_index <= (cnt < 100);
 	end
 end
 
@@ -295,7 +306,7 @@ always @(posedge clk_sys) begin
 		if(RWMODE) buff_wr <= 0;
 		state <= STATE_READY;
 		cmd_mode <= 0;
-		{s_headloaded, s_seekerr, s_crcerr, s_intrq, s_index} <= 0;
+		{s_headloaded, s_seekerr, s_crcerr, s_intrq} <= 0;
 		{s_wrfault, s_lostdata} <= 0;
 		s_drq_busy <= 0;
 		pending <= 0;
@@ -348,7 +359,7 @@ always @(posedge clk_sys) begin
 		if((!old_rd && rde) || (!old_wr && wre)) cur_addr <= addr;
 
 		//Register read operations
-		if(old_rd && !rde && (cur_addr == A_STATUS)) {s_intrq, s_index} <= 0;
+		if(old_rd && !rde && (cur_addr == A_STATUS)) s_intrq <= 0;
 
 		//end of data reading
 		if(old_rd && !rde && (cur_addr == A_DATA)) read_data <=1;
@@ -404,7 +415,6 @@ always @(posedge clk_sys) begin
 						begin
 							// head load as specified, index, track0
 							s_headloaded <= wdreg_command[3];
-							s_index <= 1;
 							wdreg_track <= 0;
 							disk_track <= 0;
 
@@ -417,7 +427,6 @@ always @(posedge clk_sys) begin
 							// set real track to datareg
 							disk_track <= wdreg_data;
 							s_headloaded <= wdreg_command[3];
-							s_index <= 1;
 
 							// get busy
 							s_drq_busy <= 2'b01;
@@ -440,7 +449,6 @@ always @(posedge clk_sys) begin
 							if (wdreg_command[4]) wdreg_track <= next_track;
 
 							s_headloaded <= wdreg_command[3];
-							s_index <= 1;
 
 							// some programs like it when FDC gets busy for a while
 							s_drq_busy <= 2'b01;
@@ -760,6 +768,11 @@ always @(posedge clk_sys) begin
 	edsk_spt <= spt[spt_addr];
 end
 
+reg  [7:0] tpos;
+reg  [7:0] tsize;
+reg  [7:0] tsizes[166];
+always @(posedge clk_sys) tsize <= tsizes[tpos];
+
 wire[127:0] edsk_sig = "EXTENDED CPC DSK";
 wire[127:0] sig_pos  = edsk_sig >> (8'd120-(scan_addr[7:0]<<3));
 
@@ -774,11 +787,9 @@ always @(posedge clk_sys) begin
    reg  [7:0] crc1;
    reg  [7:0] crc2;
 	reg  [7:0] sectors;
-	reg  [7:0] tsize[166];
 	reg [15:0] track_size, track_pos;
 	reg [19:0] offset, offset1;
 	reg  [7:0] size_lo;
-	reg  [7:0] pos;
 	reg [10:0] secpos;
 	reg  [7:0] trackf, sidef;
 
@@ -799,10 +810,10 @@ always @(posedge clk_sys) begin
 			if( scan_addr == 52) begin
 				track_size <= {scan_data, 8'd0};
 				track_pos  <= 0;
-				pos <= 1;
+				tpos <= 1;
 			end else
 			if((scan_addr  > 52) & (scan_addr < 218)) begin
-				tsize[scan_addr - 52] <= scan_data;
+				tsizes[scan_addr - 52] <= scan_data;
 				spt[scan_addr - 52] <= 0;
 			end else
 			if((scan_addr >= 256) && track_size) begin
@@ -838,13 +849,85 @@ always @(posedge clk_sys) begin
 						end
 				endcase
 				if(track_pos >= (track_size - 1'd1)) begin
-					track_size <= {tsize[pos], 8'd0};
+					track_size <= {tsize, 8'd0};
 					track_pos  <= 0;
-					pos <= pos + 1'd1;
+					tpos <= tpos + 1'd1;
 				end
 			end
 		end
 	end
 end
+
+endmodule
+
+module wd1793_dpram #(parameter DATAWIDTH=8, ADDRWIDTH=11)
+(
+	input	                clock,
+
+	input	[ADDRWIDTH-1:0] address_a,
+	input	[DATAWIDTH-1:0] data_a,
+	input	                wren_a,
+	output[DATAWIDTH-1:0] q_a,
+
+	input	[ADDRWIDTH-1:0] address_b,
+	input	[DATAWIDTH-1:0] data_b,
+	input	                wren_b,
+	output[DATAWIDTH-1:0] q_b
+);
+
+altsyncram	altsyncram_component
+(
+	.clock0(clock),
+	.wren_a(wren_a),
+	.address_b(address_b),
+	.data_b(data_b),
+	.wren_b(wren_b),
+	.address_a(address_a),
+	.data_a(data_a),
+	.q_a(q_a),
+	.q_b(q_b),
+	.aclr0(1'b0),
+	.aclr1(1'b0),
+	.addressstall_a(1'b0),
+	.addressstall_b(1'b0),
+	.byteena_a(1'b1),
+	.byteena_b(1'b1),
+	.clock1(1'b1),
+	.clocken0(1'b1),
+	.clocken1(1'b1),
+	.clocken2(1'b1),
+	.clocken3(1'b1),
+	.eccstatus(),
+	.rden_a(1'b1),
+	.rden_b(1'b1)
+);
+
+defparam
+	altsyncram_component.numwords_a = 2**ADDRWIDTH,
+	altsyncram_component.numwords_b = 2**ADDRWIDTH,
+	altsyncram_component.widthad_a = ADDRWIDTH,
+	altsyncram_component.widthad_b = ADDRWIDTH,
+	altsyncram_component.width_a = DATAWIDTH,
+	altsyncram_component.width_b = DATAWIDTH,
+
+	altsyncram_component.address_reg_b = "CLOCK0",
+	altsyncram_component.clock_enable_input_a = "BYPASS",
+	altsyncram_component.clock_enable_input_b = "BYPASS",
+	altsyncram_component.clock_enable_output_a = "BYPASS",
+	altsyncram_component.clock_enable_output_b = "BYPASS",
+	altsyncram_component.indata_reg_b = "CLOCK0",
+	altsyncram_component.lpm_type = "altsyncram",
+	altsyncram_component.operation_mode = "BIDIR_DUAL_PORT",
+	altsyncram_component.outdata_aclr_a = "NONE",
+	altsyncram_component.outdata_aclr_b = "NONE",
+	altsyncram_component.outdata_reg_a = "UNREGISTERED",
+	altsyncram_component.outdata_reg_b = "UNREGISTERED",
+	altsyncram_component.power_up_uninitialized = "FALSE",
+	altsyncram_component.read_during_write_mode_mixed_ports = "DONT_CARE",
+	altsyncram_component.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
+	altsyncram_component.read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ",
+	altsyncram_component.width_byteena_a = 1,
+	altsyncram_component.width_byteena_b = 1,
+	altsyncram_component.wrcontrol_wraddress_reg_b = "CLOCK0";
 
 endmodule
