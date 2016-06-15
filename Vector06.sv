@@ -48,7 +48,7 @@ module Vector06
 );
 
 `include "build_id.v"
-localparam CONF_STR = {"VECTOR06;;F0,ROM,Load Tape Dump;F2,EDD,Load RAM Disk;S3,FDD,Mount Floppy Disk;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot;V0,v2.20.",`BUILD_DATE};
+localparam CONF_STR = {"VECTOR06;;F0,ROM,Load Tape Dump;F2,EDD,Load RAM Disk;S3,FDD,Mount Floppy Disk;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot;V0,v2.30.",`BUILD_DATE};
 
 
 ///////////////   MIST ARM I/O   /////////////////
