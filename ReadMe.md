@@ -8,7 +8,7 @@ Precise K580VM80A (i8080) Verilog model by Vslav is used in this project. Some m
 - 320KB RAM (including 256KB of Quasi-disk)
 - Following file formats are supported: 
     - ROM: simple tape backup (loading from 0x100 address)
-    - FDD: floppy dump (read-only)
+    - FDD: floppy dump (read/write)
     - EDD: Quasi-disk dump
 - All known joystick connections: 2xP, 1xPU(USPID), 2xS
 - Specially developed i8253 module for better compatibility.
