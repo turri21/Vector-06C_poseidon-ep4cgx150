@@ -417,6 +417,7 @@ wd1793 #(1) fdd
 	.wp(0),
 
 	.size_code(3),
+	.layout(0),
 	.side(fdd_side),
 	.ready(!fdd_drive & fdd_ready),
 	.prepare(fdd_busy),
