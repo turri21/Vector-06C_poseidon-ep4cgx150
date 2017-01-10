@@ -44,6 +44,7 @@ module video
 	
 	// TV/VGA
 	input         scandoubler_disable,
+	input         ypbpr,
 
 	// CPU bus
 	input	 [15:0] addr,
@@ -186,8 +187,23 @@ scandoubler scandoubler(
 	.b_in(B_out)
 );
 
-assign {VGA_HS,           VGA_VS,  VGA_R, VGA_G, VGA_B} = scandoubler_disable ? 
-       {~(HSync ^ VSync), 1'b1,    R_out, G_out, B_out}: 
-       {~hs_out,          ~vs_out, r_out, g_out, b_out};
+video_mixer video_mixer
+(
+	.*,
+	.ypbpr_full(1),
+
+	.r_i({R_out, R_out[5:4]}),
+	.g_i({G_out, G_out[5:4]}),
+	.b_i({B_out, B_out[5:4]}),
+	.hsync_i(HSync),
+	.vsync_i(VSync),
+
+	.r_p({r_out, r_out[5:4]}),
+	.g_p({g_out, g_out[5:4]}),
+	.b_p({b_out, b_out[5:4]}),
+	.hsync_p(hs_out),
+	.vsync_p(vs_out)
+);
+
 
 endmodule

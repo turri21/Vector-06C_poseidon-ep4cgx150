@@ -55,6 +55,7 @@ localparam CONF_STR = {"VECTOR06;;F0,ROM,Load Tape Dump;F2,EDD,Load RAM Disk;S3,
 assign LED = ~(ioctl_download | ioctl_erasing);
 
 wire        scandoubler_disable;
+wire        ypbpr;
 wire        ps2_kbd_clk, ps2_kbd_data;
 
 wire  [7:0] status;
