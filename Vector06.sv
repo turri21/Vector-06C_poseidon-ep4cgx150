@@ -48,7 +48,17 @@ module Vector06
 );
 
 `include "build_id.v"
-localparam CONF_STR = {"VECTOR06;;F0,ROM,Load Tape Dump;F2,EDD,Load RAM Disk;S3,FDD,Mount Floppy Disk;O4,CPU Speed,3MHz,6MHz;O5,CPU Type,i8080,Z80;O7,Reset Palette,Yes,No;T6,Cold Reboot;V0,v2.30.",`BUILD_DATE};
+localparam CONF_STR =
+{
+	"VECTOR06;;",
+	"F0,ROMCOMC00EDD;",
+	"S3,FDD,Mount Floppy;",
+	"O4,CPU Speed,3MHz,6MHz;",
+	"O5,CPU Type,i8080,Z80;",
+	"O7,Reset Palette,Yes,No;",
+	"T6,Cold Reboot;",
+	"V0,v2.30.",`BUILD_DATE
+};
 
 
 ///////////////   MIST ARM I/O   /////////////////
@@ -58,7 +68,7 @@ wire        scandoubler_disable;
 wire        ypbpr;
 wire        ps2_kbd_clk, ps2_kbd_data;
 
-wire  [7:0] status;
+wire [31:0] status;
 wire  [1:0] buttons;
 wire  [7:0] joyA;
 wire  [7:0] joyB;
@@ -68,7 +78,7 @@ wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
 wire        ioctl_download;
 wire        ioctl_erasing;
-wire  [4:0] ioctl_index;
+wire  [7:0] ioctl_index;
 
 wire [31:0] sd_lba;
 wire        sd_rd;
@@ -165,7 +175,7 @@ always @(posedge clk_sys) begin
 	if(ioctl_erasing | ioctl_download) begin
 		reset_flg <= 1;
 		reset     <= 1;
-		if(ioctl_download) rom_enable <= (ioctl_index != 1);
+		if(ioctl_download) rom_enable <= ~((ioctl_index[4:0]==1) && (ioctl_index[7:6]<3));
 	end else begin
 		if(reset_flg) begin
 			reset_flg  <= 0;
