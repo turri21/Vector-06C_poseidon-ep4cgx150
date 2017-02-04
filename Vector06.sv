@@ -53,11 +53,12 @@ localparam CONF_STR =
 	"VECTOR06;;",
 	"F0,ROMCOMC00EDD;",
 	"S3,FDD,Mount Floppy;",
+	"O12,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
 	"O4,CPU Speed,3MHz,6MHz;",
 	"O5,CPU Type,i8080,Z80;",
 	"O7,Reset Palette,Yes,No;",
 	"T6,Cold Reboot;",
-	"V0,v2.30.",`BUILD_DATE
+	"V0,v2.50.",`BUILD_DATE
 };
 
 
@@ -192,11 +193,12 @@ always @(posedge clk_sys) begin
 			rom_enable <= 1;
 			cold_reset <= 1;
 		end
-
+		
 		// reset by button or key
 		if(status[6] | buttons[1] | reset_key[0] | (fdd_busy & rom_enable)) begin
 			rom_enable <= ~reset_key[2]; // disable boot rom if Alt is held.
 			reset_flg  <= 1;
+
 			cold_reset <= status[6];
 		end
 	end
@@ -456,6 +458,7 @@ video video
 	.io_we(pal_sel & io_wr),
 	.border(ppi1_b[3:0]),
 	.mode512(ppi1_b[4]),
+	.scale(status[2:1]),
 	.retrace(retrace)
 );
 

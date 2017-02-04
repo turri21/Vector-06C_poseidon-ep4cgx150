@@ -45,6 +45,7 @@ module video
 	// TV/VGA
 	input         scandoubler_disable,
 	input         ypbpr,
+	input   [1:0] scale,
 
 	// CPU bus
 	input	 [15:0] addr,
@@ -56,7 +57,7 @@ module video
 	input   [7:0] scroll,
 	input   [3:0] border,
 	input         mode512,
-	output        retrace
+	output reg    retrace
 );
 
 assign     retrace = VSync;
@@ -81,29 +82,38 @@ dpram vram
 	.q(vram_o)
 );
 
+reg mode512_lock;
+
 always @(posedge clk_sys) begin
 	reg [7:0] border_d;
+	reg       mode512_acc; 
 
 	if(ce_12mp) begin
-		if(hc == 767) begin 
+		if(hc == 767) begin
 			hc <=0;
-			if (vc == 311) begin 
-				vc <= 9'd0;
-			end else begin
-				vc <= vc + 1'd1;
-
-				if(vc == 271) VBlank <= 1;
-				if(vc == 271) VSync  <= 1;
-				if(vc == 281) VSync  <= 0;
-				if(vc == 295) VBlank <= 0;
+			if (vc == 311) vc <= 9'd0;
+				else vc <= vc + 1'd1;
+			if(vc == 271) begin
+				VSync <= 1;
+				mode512_lock <= (mode512_acc | ~hq2x);
+				mode512_acc  <= 0;
 			end
-		end else hc <= hc + 1'd1;
+			if(vc == 281) VSync <= 0;
+		end else begin
+			hc <= hc + 1'd1;
+		end
 
 		if((vc == 311) && (hc == 759)) roll <= scroll;
-		if(hc == 563) HBlank <= 1;
-		if(hc == 597) HSync  <= 1;
-		if(hc == 653) HSync  <= 0;
-		if(hc == 723) HBlank <= 0;
+		if(hc == 563) begin
+			HBlank <= 1;
+			if(vc == 267) VBlank <= 1;
+		end
+		if(hc == 597) HSync <= 1;
+		if(hc == 653) HSync <= 0;
+		if(hc == 723) begin
+			HBlank <= 0;
+			if(vc == 295) VBlank <= 0;
+		end
 	end
 
 	if(ce_12mn) begin
@@ -119,6 +129,7 @@ always @(posedge clk_sys) begin
 
 		dot   <= ~hc[0];
 		viden <= ~HBlank & ~VBlank;
+		if(~HBlank & ~VBlank) mode512_acc <= mode512_acc | mode512;
 	end
 end
 
@@ -153,57 +164,21 @@ end
 
 wire [2:0] R = {3{viden}} & palette[color_idx][2:0];
 wire [2:0] G = {3{viden}} & palette[color_idx][5:3];
-wire [1:0] B = {2{viden}} & palette[color_idx][7:6];
+wire [2:0] B = {3{viden}} & {palette[color_idx][7:6], palette[color_idx][7]};
 
-wire [5:0] R_out;
-wire [5:0] G_out;
-wire [5:0] B_out;
+wire hq2x = (scale == 1);
 
-osd #(10'd0, 10'd0, 3'd4) osd
+video_mixer #(.LINE_LENGTH(768), .HALF_DEPTH(1)) video_mixer
 (
 	.*,
 	.ce_pix(ce_12mp),
-	.R_in({R, R}),
-	.G_in({G, G}),
-	.B_in({B, B, B})
-);
+	.ce_pix_actual(ce_12mp & (mode512_lock | ~dot)),
 
-wire       hs_out, vs_out;
-wire [5:0] r_out;
-wire [5:0] g_out;
-wire [5:0] b_out;
+	.scanlines(scandoubler_disable ? 2'b00 : {scale == 3, scale == 2}),
 
-scandoubler scandoubler(
-	.*,
-	.ce_x2(ce_12mp | ce_12mn),
-	.ce_x1(ce_12mp),
-
-	.scanlines(2'b00),
-
-	.hs_in(HSync),
-	.vs_in(VSync),
-	.r_in(R_out),
-	.g_in(G_out),
-	.b_in(B_out)
-);
-
-video_mixer video_mixer
-(
-	.*,
 	.ypbpr_full(1),
-
-	.r_i({R_out, R_out[5:4]}),
-	.g_i({G_out, G_out[5:4]}),
-	.b_i({B_out, B_out[5:4]}),
-	.hsync_i(HSync),
-	.vsync_i(VSync),
-
-	.r_p({r_out, r_out[5:4]}),
-	.g_p({g_out, g_out[5:4]}),
-	.b_p({b_out, b_out[5:4]}),
-	.hsync_p(hs_out),
-	.vsync_p(vs_out)
+	.line_start(0),
+	.mono(0)
 );
-
 
 endmodule
