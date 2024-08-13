@@ -51,8 +51,8 @@ module Vector06
 localparam CONF_STR =
 {
 	"VECTOR06;;",
-	"F0,ROMCOMC00EDD;",
-	"S3,FDD,Mount Floppy;",
+	"F1,ROMCOMC00EDD;",
+	"S0,FDD,Mount Floppy;",
 	"O12,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;",
 	"O4,CPU Speed,3MHz,6MHz;",
 	"O5,CPU Type,i8080,Z80;",
