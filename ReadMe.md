@@ -1,6 +1,6 @@
 -=(Poseidon notes)=-
 
-Port by https://github.com/turri21
+Port by [turri21](https://github.com/turri21)
 
 v1.0: I2S Sound is working, T80 updated
 
