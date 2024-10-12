@@ -1,3 +1,9 @@
+-=(Poseidon notes)=-
+
+Port by https://github.com/turri21
+
+v1.0: I2S Sound is working, T80 updated
+
 # [Vector 06C](https://en.wikipedia.org/wiki/Vector-06C) for [MIST Board](https://github.com/mist-devel/mist-board/wiki)
 
 Precise K580VM80A (i8080) Verilog model by Vslav is used in this project. Some modules from [Vector06cc](https://github.com/svofski/vector06cc) and [Bashkiria 2M](http://bashkiria-2m.narod.ru/index/fpga/0-12) were used.
