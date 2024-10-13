@@ -14,7 +14,7 @@
 
 module guest_top
 (
-   input         CLOCK_27,  // 50 MHz passing from poseidon_top
+   input         CLOCK_50,  // Input clock 50 MHz
 
    output [5:0]  VGA_R,
    output [5:0]  VGA_G,
@@ -27,8 +27,7 @@ module guest_top
    output        AUDIO_L,
    output        AUDIO_R,
 	
-	
-	output        I2S_BCK,
+   output        I2S_BCK,
 	output        I2S_LRCK,
 	output        I2S_DATA,
 
@@ -51,6 +50,15 @@ module guest_top
    output        SDRAM_CLK,
    output        SDRAM_CKE
 );
+
+
+`ifdef BIG_OSD
+localparam bit BIG_OSD = 1;
+localparam SEP = "-;";
+`else
+localparam bit BIG_OSD = 0;
+localparam SEP = "";
+`endif
 
 `include "build_id.v"
 localparam CONF_STR =
@@ -125,7 +133,7 @@ mist_io #(.STRLEN($size(CONF_STR)>>3)) mist_io
 wire locked;
 pll pll
 (
-	.inclk0(CLOCK_27),
+	.inclk0(CLOCK_50),
 	.locked(locked),
 	.c0(clk_sys),
 	.c1(SDRAM_CLK)
@@ -622,13 +630,49 @@ always @(posedge clk_sys) begin
 		else if(~old_we & vox_we) covox <= cpu_o;
 end
 
-reg init_reset = 1;
+//sigma_delta_dac #(.MSBI(9)) dac_l
+//(
+//	.CLK(clk_sys),
+//	.RESET(reset),
+//	.DACin(psg_active ? {1'b0, psg_ch_a, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {1'b0, legacy_audio, 8'd0} + {1'b0, covox, 1'b0}),
+//	.DACout(AUDIO_L)
+//);
+//
+//sigma_delta_dac #(.MSBI(9)) dac_r
+//(
+//	.CLK(clk_sys),
+//	.RESET(reset),
+//	.DACin(psg_active ? {1'b0, psg_ch_c, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {1'b0, legacy_audio, 8'd0} + {1'b0, covox, 1'b0}),
+//	.DACout(AUDIO_R)
+//);
 
+wire init_reset = 1;
+//wire DAC_L, DAC_R;
 wire [15:0] SOUND_L;  // 16-bit wide wire for left audio channel
 wire [15:0] SOUND_R;  // 16-bit wide wire for right audio channel
 
 assign SOUND_L = {psg_active ? {1'b0, psg_ch_a, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {1'b0, legacy_audio, 8'd0} + {1'b0, covox, 1'b0}, 5'd0};
 assign SOUND_R = {psg_active ? {1'b0, psg_ch_c, 1'b0} + {2'b00, psg_ch_b} + {1'b0, legacy_audio, 7'd0} : {1'b0, legacy_audio, 8'd0} + {1'b0, covox, 1'b0}, 5'd0};
+
+//sigma_delta_dac #(16) dac_l
+//(
+//	//.CLK(clk_sys && ce_28m),
+//	.CLK(clk_sys),
+//	.RESET(~init_reset),
+//	.DACin(SOUND_L),
+//	//.DACin({~SOUND_L[15], SOUND_L[14:0]}),
+//	.DACout(DAC_L)
+//);
+//
+//sigma_delta_dac #(16) dac_r
+//(
+//	//.CLK(clk_sys && ce_28m),
+//	.CLK(clk_sys),
+//	.RESET(~init_reset),
+//	.DACin(SOUND_R),
+//	//.DACin({~SOUND_R[15], SOUND_R[14:0]}),
+//	.DACout(DAC_R)
+//);
 
 i2s i2s (
 	.reset(~init_reset),
@@ -643,6 +687,5 @@ i2s i2s (
 
 assign AUDIO_L = SOUND_L;
 assign AUDIO_R = SOUND_R;
-
 
 endmodule
