@@ -2,7 +2,7 @@
 
 Port by [turri21](https://github.com/turri21)
 
-v1.0: I2S Sound is working
+v1.0: I2S Sound is working, Updated T80
 
 # [Vector 06C](https://en.wikipedia.org/wiki/Vector-06C) for [MIST Board](https://github.com/mist-devel/mist-board/wiki)
 
