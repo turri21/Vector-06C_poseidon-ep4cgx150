@@ -23,7 +23,7 @@
 
 # Clock constraints
 
-create_clock -name "CLOCK_50" -period 20.000 [get_ports {CLOCK_50}]
+create_clock -name "CLOCK_27" -period 37.037 [get_ports {CLOCK_27}]
 create_clock -name {SPI_SCK}  -period 10.000 -waveform { 0.000 0.500 } [get_ports {SPI_SCK}]
 
 # Automatically constrain PLL and other generated clocks

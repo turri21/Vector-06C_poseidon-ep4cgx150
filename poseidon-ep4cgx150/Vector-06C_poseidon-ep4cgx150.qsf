@@ -389,7 +389,7 @@ set_global_assignment -name PRE_FLOW_SCRIPT_FILE "quartus_sh:build_id_verilog.tc
 set_global_assignment -name SYSTEMVERILOG_FILE poseidon_top.sv
 set_global_assignment -name QIP_FILE pll.qip
 set_global_assignment -name QIP_FILE ../T80/T80.qip
-set_global_assignment -name VERILOG_FILE ../mist-modules/i2s.v
+set_global_assignment -name VERILOG_FILE "../mist-modules/i2s.v"
 set_global_assignment -name VERILOG_FILE ../sram.v
 set_global_assignment -name VERILOG_FILE ../dpram.v
 set_global_assignment -name VERILOG_FILE ../bios.v

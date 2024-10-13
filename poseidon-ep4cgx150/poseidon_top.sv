@@ -1,14 +1,13 @@
 
 module poseidon_top (
-//	input         CLOCK_27,
-`ifdef USE_CLOCK_50
+
 	input         CLOCK_50,
-`endif
+
 
 	output        LED,
-	output [VGA_BITS-1:0] VGA_R,
-	output [VGA_BITS-1:0] VGA_G,
-	output [VGA_BITS-1:0] VGA_B,
+	output [5:0] VGA_R,
+	output [5:0] VGA_G,
+	output [5:0] VGA_B,
 	output        VGA_HS,
 	output        VGA_VS,
 
@@ -84,11 +83,7 @@ module poseidon_top (
 );
 
 
-`ifdef VGA_8BIT
-localparam VGA_BITS = 8;
-`else
-localparam VGA_BITS = 6;
-`endif
+
 
 `ifdef BIG_OSD
 localparam bit BIG_OSD = 1;
@@ -102,7 +97,7 @@ localparam SEP = "";
 
 guest_top guest
 (
- .CLOCK_27    (CLOCK_50),
+ .CLOCK_50    (CLOCK_50),
  .*
 );
 
