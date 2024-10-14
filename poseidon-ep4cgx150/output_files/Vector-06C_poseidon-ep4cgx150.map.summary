@@ -1,0 +1,18 @@
+Analysis & Synthesis Status : Successful - Sun Oct 13 19:08:18 2024
+Quartus Prime Version : 17.0.2 Build 602 07/19/2017 SJ Lite Edition
+Revision Name : Vector-06C_poseidon-ep4cgx150
+Top-level Entity Name : poseidon_top
+Family : Cyclone IV GX
+Total logic elements : 10,134
+    Total combinational functions : 9,016
+    Dedicated logic registers : 3,038
+Total registers : 3038
+Total pins : 72
+Total virtual pins : 0
+Total memory bits : 490,640
+Embedded Multiplier 9-bit elements : 0
+Total GXB Receiver Channel PCS : 0
+Total GXB Receiver Channel PMA : 0
+Total GXB Transmitter Channel PCS : 0
+Total GXB Transmitter Channel PMA : 0
+Total PLLs : 1
